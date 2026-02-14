@@ -28,7 +28,12 @@ const formatDateTime = (isoString: string) => {
   };
 };
 
-export default function LedgerTable() {
+const formatCurrency = (val: number) => {
+  const sign = val > 0 ? "+" : val < 0 ? "-" : "";
+  return `${sign}$${Math.abs(val).toFixed(2)}`;
+};
+
+export const ResultTable = () => {
   const columns = useMemo(
     () => [
       columnHelper.accessor("betDateTime", {
@@ -86,32 +91,25 @@ export default function LedgerTable() {
       }),
       columnHelper.accessor("result", {
         header: "RESULT",
-        cell: (info) => {
-          const result = info.getValue();
-          return (
-            <div
-              className={`text-sm font-bold uppercase tracking-wide ${
-                result === "WON" ? "text-safe" : "text-error"
-              }`}
-            >
-              {result}
-            </div>
-          );
-        },
+        cell: (info) => (
+          <div
+            className={`text-sm font-bold uppercase tracking-wide ${info.getValue() === "WON" ? "text-safe" : "text-error"}`}
+          >
+            {info.getValue()}
+          </div>
+        ),
       }),
       columnHelper.accessor("profitLoss", {
         header: "P&L",
         cell: (info) => {
           const val = info.getValue();
+          const color =
+            val > 0 ? "text-safe" : val < 0 ? "text-error" : "text-stone";
           return (
             <div
-              className={`font-mono text-sm font-bold tabular-nums ${
-                val > 0 ? "text-safe" : val < 0 ? "text-error" : "text-stone"
-              }`}
+              className={`font-mono text-sm font-bold tabular-nums ${color}`}
             >
-              {val > 0
-                ? `+$${val.toFixed(2)}`
-                : `-$${Math.abs(val).toFixed(2)}`}
+              {formatCurrency(val)}
             </div>
           );
         },
@@ -123,9 +121,7 @@ export default function LedgerTable() {
   const table = useReactTable({
     data: MOCK_RESULT_DATA,
     columns,
-
     autoResetPageIndex: false,
-
     getCoreRowModel: getCoreRowModel(),
   });
 
@@ -165,4 +161,6 @@ export default function LedgerTable() {
       </table>
     </div>
   );
-}
+};
+
+export default ResultTable;
