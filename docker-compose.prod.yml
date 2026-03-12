@@ -1,0 +1,62 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_API_SECRET: ${VITE_API_SECRET}
+    ports: []
+    restart: unless-stopped
+
+  api:
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    environment:
+      - FRONTEND_URL=${FRONTEND_URL}
+      - FRONTEND_API_SECRET=${FRONTEND_API_SECRET}
+    ports: []
+    volumes:
+      - match_data:/data
+      - pandascore_cache:/cache/pandascore
+      - ./backend/models:/app/models
+    restart: unless-stopped
+
+  worker:
+    command: celery -A worker.celery_app worker --loglevel=info
+    volumes:
+      - match_data:/data
+      - pandascore_cache:/cache/pandascore
+      - ./backend/models:/app/models
+    extra_hosts: []
+    restart: unless-stopped
+
+  beat:
+    command: celery -A worker.celery_app beat --loglevel=info
+    volumes:
+      - pandascore_cache:/cache/pandascore
+    restart: unless-stopped
+
+  pgadmin:
+    profiles:
+      - dev
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: draft-gap-caddy
+    depends_on:
+      - frontend
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - APP_DOMAIN=${APP_DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

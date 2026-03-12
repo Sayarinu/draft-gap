@@ -1,0 +1,134 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: draft-gap-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  frontend:
+    build: ./frontend
+    container_name: draft-gap-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
+    depends_on:
+      - api
+  redis:
+    image: redis:7-alpine
+    container_name: draft-gap-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: draft-gap-worker
+    command: celery -A worker.celery_app worker --loglevel=info
+    volumes:
+      - ./backend:/app
+      - match_data:/data
+      - pandascore_cache:/cache/pandascore
+      - model_artifacts:/app/models
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - PANDA_SCORE_KEY=${PANDA_SCORE_KEY:-}
+      - PANDASCORE_OUTPUT_DIR=/cache/pandascore
+      - ML_MODEL_PATH=/app/models
+      - ML_DEVICE=cpu
+      - MATCH_DATA_DIR=/data/matches
+      - BOOKIE_HTTP_PROXY=${BOOKIE_HTTP_PROXY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.light
+    container_name: draft-gap-beat
+    command: celery -A worker.celery_app beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - PANDASCORE_OUTPUT_DIR=/cache/pandascore
+    volumes:
+      - ./backend:/app
+      - pandascore_cache:/cache/pandascore
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.light
+    container_name: draft-gap-api
+    volumes:
+      - ./backend:/app
+      - match_data:/data
+      - pandascore_cache:/cache/pandascore
+      - model_artifacts:/app/models
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - REDIS_URL=${REDIS_URL}
+      - PANDA_SCORE_KEY=${PANDA_SCORE_KEY:-}
+      - PANDASCORE_OUTPUT_DIR=/cache/pandascore
+      - ML_MODEL_PATH=/app/models
+      - ML_DEVICE=cpu
+      - MATCH_DATA_DIR=/data/matches
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  backup-helper:
+    image: alpine:3.19
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: draft-gap-pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "8080:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:80/misc/ping || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+volumes:
+  postgres_data:
+  redis_data:
+  pandascore_cache:
+  model_artifacts:
+  match_data:

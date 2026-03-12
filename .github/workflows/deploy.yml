@@ -1,0 +1,169 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
+
+jobs:
+  build:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image base (lowercase for Docker)
+        run: echo "IMAGE_BASE=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create env file for build
+        run: |
+          printf '%s' "${{ secrets.DEPLOY_ENV }}" > .env.production
+          grep -q '^VITE_API_URL=' .env.production || echo 'VITE_API_URL=https://api.example.com' >> .env.production
+          grep -q '^VITE_API_SECRET=' .env.production || echo 'VITE_API_SECRET=' >> .env.production
+
+      - name: Pull previous images for cache
+        run: |
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}"
+          for svc in api worker beat frontend; do
+            docker pull "${IMAGE_BASE}/${svc}:latest" || true
+          done
+
+      - name: Build images
+        run: |
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}"
+          DOCKER_BUILDKIT=1 docker compose \
+            -f docker-compose.yml -f docker-compose.prod.yml \
+            --env-file .env.production \
+            build \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            api worker beat frontend
+
+      - name: Tag and push images
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}"
+          for svc in api worker beat frontend; do
+            docker tag "draft-gap-${svc}" "${IMAGE_BASE}/${svc}:${IMAGE_TAG}"
+            docker tag "draft-gap-${svc}" "${IMAGE_BASE}/${svc}:latest"
+            docker push "${IMAGE_BASE}/${svc}:${IMAGE_TAG}"
+            docker push "${IMAGE_BASE}/${svc}:latest"
+          done
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image base (lowercase for Docker)
+        run: echo "IMAGE_BASE=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s' "${{ secrets.DEPLOY_SSH_KEY }}" | sed 's/\r$//' > ~/.ssh/id_ed25519
+          [ -n "$(tail -c1 ~/.ssh/id_ed25519)" ] && echo >> ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Create docker-compose.ci.yml for prebuilt images
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}"
+          printf 'services:\n  api:\n    image: %s/api:%s\n  worker:\n    image: %s/worker:%s\n  beat:\n    image: %s/beat:%s\n  frontend:\n    image: %s/frontend:%s\n' \
+            "$IMAGE_BASE" "$IMAGE_TAG" "$IMAGE_BASE" "$IMAGE_TAG" "$IMAGE_BASE" "$IMAGE_TAG" "$IMAGE_BASE" "$IMAGE_TAG" > docker-compose.ci.yml
+
+      - name: Remove obsolete frontend build dirs on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "rm -rf '${{ secrets.DEPLOY_PATH }}/frontend/.next' '${{ secrets.DEPLOY_PATH }}/frontend/dist'"
+
+      - name: Sync repository to server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "mkdir -p '${{ secrets.DEPLOY_PATH }}' '${{ secrets.DEPLOY_PATH }}/backend/models'"
+          rsync -az --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude ".cursor" \
+            --exclude "node_modules" \
+            --exclude "frontend/dist" \
+            --exclude "__pycache__" \
+            --exclude ".venv" \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            ./ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
+
+      - name: Upload production env file
+        run: |
+          printf '%s' "${{ secrets.DEPLOY_ENV }}" > .env.production
+          scp -i ~/.ssh/id_ed25519 .env.production "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/.env.production"
+
+      - name: Log in to GHCR on server
+        env:
+          GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_PAT" | ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin"
+
+      - name: Deploy containers
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "cd '${{ secrets.DEPLOY_PATH }}' && chmod +x deploy/deploy.sh && ./deploy/deploy.sh .env.production"
+
+      - name: Health check
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" '
+            APP_DOMAIN="$(grep "^APP_DOMAIN=" "${{ secrets.DEPLOY_PATH }}/.env.production" | cut -d= -f2- | tr -d "\r" | tail -n1)"
+            if [ -z "$APP_DOMAIN" ]; then
+              echo "APP_DOMAIN is missing in .env.production"
+              exit 1
+            fi
+            for i in $(seq 1 30); do
+              curl -fsS --resolve "${APP_DOMAIN}:443:127.0.0.1" "https://${APP_DOMAIN}/health" && exit 0
+              sleep 5
+            done
+            echo "Health check failed after 150s"
+            exit 1
+          '
