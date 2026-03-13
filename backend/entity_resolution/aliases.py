@@ -91,6 +91,13 @@ TEAM_ALIASES: dict[str, str] = {
     "dsg": "Disguised",
     "lions esports": "Lions Esports",
 
+    "bnk fearx": "BNK FearX",
+    "bfx": "BNK FearX",
+    "lyon": "LYON",
+    "lyon esports": "LYON",
+    "team secret whales": "Team Secret Whales",
+    "team secret": "Team Secret Whales",
+    "ts whales": "Team Secret Whales",
     "loud": "LOUD",
     "pain gaming": "paiN Gaming",
     "pain": "paiN Gaming",

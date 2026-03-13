@@ -60,6 +60,9 @@ function getApiBaseUrl(): string {
   if (typeof window !== "undefined" && window.location?.hostname === "localhost") {
     return "http://localhost:8000";
   }
+  if (typeof window !== "undefined") {
+    return "";
+  }
   return "";
 }
 
@@ -79,14 +82,18 @@ function apiHeaders(extra: HeadersInit = {}): HeadersInit {
   return { ...headers, ...(extra as Record<string, string>) };
 }
 
+function requireApiBase(): void {
+  const base = getApiBaseUrl();
+  if (!base && typeof window === "undefined") {
+    throw new Error(MISSING_API_URL_MESSAGE);
+  }
+}
+
 export async function fetchUpcomingMatches(
   perPage = 100,
   tier: string | null = "s,a",
 ): Promise<PandaScoreUpcomingMatch[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const params = new URLSearchParams({ per_page: String(perPage) });
   if (tier) params.set("tier", tier);
   const url = `${apiUrl("/pandascore/lol/upcoming")}?${params.toString()}`;
@@ -108,10 +115,7 @@ export async function fetchUpcomingWithOdds(
   perPage = 100,
   tier: string | null = "s,a",
 ): Promise<UpcomingMatchWithOdds[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const params = new URLSearchParams({ per_page: String(perPage) });
   if (tier) params.set("tier", tier);
   const url = `${apiUrl("/pandascore/lol/upcoming-with-odds")}?${params.toString()}`;
@@ -132,10 +136,7 @@ export async function fetchUpcomingWithOdds(
 export async function fetchLiveWithOdds(
   perPage = 20,
 ): Promise<LiveMatchWithOdds[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const params = new URLSearchParams({ per_page: String(perPage) });
   const url = `${apiUrl("/pandascore/lol/live-with-odds")}?${params.toString()}`;
   const res = await fetch(url, {
@@ -153,11 +154,7 @@ export async function fetchLiveWithOdds(
 }
 
 export async function fetchOddsRefreshStatus(): Promise<OddsRefreshStatus> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-
+  requireApiBase();
   const res = await fetch(apiUrl("/pandascore/odds-refresh-status"), {
     headers: apiHeaders(),
     cache: "no-store",
@@ -172,11 +169,7 @@ export async function fetchOddsRefreshStatus(): Promise<OddsRefreshStatus> {
 }
 
 export async function triggerOddsRefresh(): Promise<OddsRefreshAccepted | OddsRefreshLocked> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-
+  requireApiBase();
   const res = await fetch(apiUrl("/pandascore/refresh-odds"), {
     method: "POST",
     headers: apiHeaders(),
@@ -217,11 +210,7 @@ export async function triggerOddsRefresh(): Promise<OddsRefreshAccepted | OddsRe
 }
 
 export async function fetchOddsRefreshProgress(taskId: string): Promise<OddsRefreshProgress> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-
+  requireApiBase();
   const params = new URLSearchParams({ task_id: taskId });
   const res = await fetch(`${apiUrl("/pandascore/refresh-odds-progress")}?${params.toString()}`, {
     headers: apiHeaders(),
@@ -237,10 +226,7 @@ export async function fetchOddsRefreshProgress(taskId: string): Promise<OddsRefr
 }
 
 export async function fetchOddsRefreshGlobalStatus(): Promise<OddsRefreshGlobalStatus> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const res = await fetch(apiUrl("/pandascore/odds-refresh-global-status"), {
     headers: apiHeaders(),
     cache: "no-store",
@@ -255,10 +241,7 @@ export async function fetchOddsRefreshGlobalStatus(): Promise<OddsRefreshGlobalS
 }
 
 export async function fetchBettingResults(limit = 100): Promise<Result[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const params = new URLSearchParams({ limit: String(limit) });
   const url = `${apiUrl("/betting/results")}?${params.toString()}`;
   const res = await fetch(url, { headers: apiHeaders() });
@@ -272,10 +255,7 @@ export async function fetchBettingResults(limit = 100): Promise<Result[]> {
 }
 
 export async function fetchActiveBets(): Promise<ActiveBet[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const res = await fetch(apiUrl("/betting/bets/active"), {
     headers: apiHeaders(),
     cache: "no-store",
@@ -290,10 +270,7 @@ export async function fetchActiveBets(): Promise<ActiveBet[]> {
 }
 
 export async function fetchBankrollSummary(): Promise<BankrollSummary> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const res = await fetch(apiUrl("/betting/bankroll"), {
     headers: apiHeaders(),
   });
@@ -309,10 +286,7 @@ export async function fetchBankrollSummary(): Promise<BankrollSummary> {
 export async function fetchPowerRankings(
   league?: string,
 ): Promise<PowerRankingRow[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const params = new URLSearchParams();
   if (league && league !== "all") {
     params.set("league", league);

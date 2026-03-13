@@ -21,12 +21,15 @@ import {
   matchesResultSearch,
   matchesSearch,
 } from "@/app/lib/matchFilters";
+import { useIsMobile } from "@/app/lib/useMediaQuery";
 import { Header } from "./components/Header";
 import { LiveMatchTable } from "./components/Table/LiveMatchTable";
 import { PowerRankingsTable } from "./components/Table/PowerRankingsTable";
 import { ResultTable } from "./components/Table/ResultTable";
 import { UpcomingWithOddsTable } from "./components/Table/UpcomingWithOddsTable";
 import { BankrollSummaryBar } from "./components/UI/BankrollSummaryBar/BankrollSummaryBar";
+import { LiveMatchCard } from "./components/UI/LiveMatchCard/LiveMatchCard";
+import { UpcomingMatchCard } from "./components/UI/UpcomingMatchCard/UpcomingMatchCard";
 import { ResultsMetrics } from "./components/UI/ResultsMetrics/ResultsMetrics";
 import { SearchFilterRefreshBar } from "./components/UI/SearchFilterRefreshBar/SearchFilterRefreshBar";
 import { TabEnum } from "./enums/tabs";
@@ -35,6 +38,7 @@ import type { ActiveBet } from "./types/Betting";
 import type { Result } from "./types/Result";
 
 export const Home = () => {
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<TabEnum>(TabEnum.Upcoming);
   const [matches, setMatches] = useState<UpcomingMatchWithOdds[]>([]);
   const [liveMatches, setLiveMatches] = useState<LiveMatchWithOdds[]>([]);
@@ -388,6 +392,16 @@ export const Home = () => {
                     <div className="p-6 text-center text-taupe text-sm uppercase tracking-wide bg-deepdark">
                       No live matches
                     </div>
+                  ) : isMobile ? (
+                    <div className="divide-y divide-concrete">
+                      {(filteredLive as LiveMatchWithOdds[]).map((m) => (
+                        <LiveMatchCard
+                          key={m.id}
+                          match={m}
+                          activeBet={activeBetsByMatchId[m.id]}
+                        />
+                      ))}
+                    </div>
                   ) : (
                     <LiveMatchTable
                       matches={filteredLive as LiveMatchWithOdds[]}
@@ -415,6 +429,16 @@ export const Home = () => {
                           Clear filter to see all
                         </button>
                       )}
+                    </div>
+                  ) : isMobile ? (
+                    <div className="divide-y divide-concrete">
+                      {filteredUpcoming.map((m) => (
+                        <UpcomingMatchCard
+                          key={m.id}
+                          match={m}
+                          activeBet={activeBetsByMatchId[m.id]}
+                        />
+                      ))}
                     </div>
                   ) : (
                     <UpcomingWithOddsTable

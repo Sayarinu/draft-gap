@@ -858,6 +858,10 @@ def _attach_v2_model_odds(rows: list[dict[str, object]]) -> None:
                 try:
                     team1, team2 = _get_team_names_from_match(row)
                     if team1 == "TBD" or team2 == "TBD":
+                        logger.debug(
+                            "V2 model odds skip: match_id=%s team1=%s team2=%s reason=tbd",
+                            row.get("id"), team1, team2,
+                        )
                         continue
 
                     opps = row.get("opponents") or []
@@ -876,6 +880,11 @@ def _attach_v2_model_odds(rows: list[dict[str, object]]) -> None:
                         abbreviation=acr2,
                     )
                     if not team_a or not team_b:
+                        logger.info(
+                            "V2 model odds skip: match_id=%s team1=%s team2=%s ps_id1=%s ps_id2=%s acr1=%s acr2=%s reason=team_not_resolved team_a=%s team_b=%s",
+                            row.get("id"), team1, team2, ps_id1, ps_id2, acr1, acr2,
+                            "ok" if team_a else "missing", "ok" if team_b else "missing",
+                        )
                         continue
                     resolved_rows += 1
 
@@ -896,8 +905,20 @@ def _attach_v2_model_odds(rows: list[dict[str, object]]) -> None:
                         row["pre_match_odds_team1"] = pre_a
                         row["pre_match_odds_team2"] = pre_b
                         attached_rows += 1
+                    else:
+                        logger.info(
+                            "V2 model odds skip: match_id=%s team1=%s team2=%s reason=predictor_returned_none",
+                            row.get("id"), team1, team2,
+                        )
                 except Exception:
-                    logger.exception("V2 model odds row attach failed")
+                    try:
+                        t1, t2 = _get_team_names_from_match(row)
+                    except Exception:
+                        t1, t2 = "?", "?"
+                    logger.exception(
+                        "V2 model odds row attach failed: match_id=%s team1=%s team2=%s",
+                        row.get("id"), t1, t2,
+                    )
                     continue
 
             session.commit()
