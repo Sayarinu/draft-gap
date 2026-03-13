@@ -8,6 +8,7 @@ interface SearchFilterRefreshBarProps {
   refreshProgress?: number;
   refreshStageLabel?: string;
   refreshButtonDisabled?: boolean;
+  lastRefreshLabel?: string;
   nextRefreshLabel?: string;
   filterPanelOpen: boolean;
   onToggleFilterPanel: () => void;
@@ -67,6 +68,7 @@ export const SearchFilterRefreshBar = ({
   refreshProgress = 0,
   refreshStageLabel = "",
   refreshButtonDisabled = false,
+  lastRefreshLabel = "",
   nextRefreshLabel = "",
   filterPanelOpen,
   onToggleFilterPanel,
@@ -84,9 +86,12 @@ export const SearchFilterRefreshBar = ({
   const isRefreshDisabled = isRefreshing || refreshButtonDisabled;
   const refreshTitle = isRefreshing
     ? "Refreshing..."
-    : nextRefreshLabel || "Refresh data";
-  const showLockMessage = refreshButtonDisabled && !isRefreshing && Boolean(nextRefreshLabel);
+    : refreshButtonDisabled
+      ? "Auto-refresh every 15 min"
+      : nextRefreshLabel || "Refresh data";
   const safeProgress = Math.max(0, Math.min(100, Math.round(refreshProgress)));
+  const showLastNext =
+    !isRefreshing && (lastRefreshLabel !== "" || nextRefreshLabel !== "");
 
   return (
     <div className="border-b border-soulsilver/50 bg-deepdark/30">
@@ -104,13 +109,12 @@ export const SearchFilterRefreshBar = ({
             aria-hidden
           />
         </button>
-        {showLockMessage && (
-          <span className="text-2xs text-error whitespace-nowrap font-semibold uppercase tracking-wide">
-            Refresh locked
+        {showLastNext && (
+          <span className="text-2xs text-taupe whitespace-nowrap">
+            {lastRefreshLabel !== "" ? `Last: ${lastRefreshLabel}` : ""}
+            {lastRefreshLabel !== "" && nextRefreshLabel !== "" ? " · " : ""}
+            {nextRefreshLabel !== "" ? nextRefreshLabel : ""}
           </span>
-        )}
-        {nextRefreshLabel && !isRefreshing && (
-          <span className="text-2xs text-taupe whitespace-nowrap">{nextRefreshLabel}</span>
         )}
         <button
           type="button"

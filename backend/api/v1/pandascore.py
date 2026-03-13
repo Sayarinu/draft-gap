@@ -15,6 +15,11 @@ from pydantic import BaseModel
 from celery.result import AsyncResult  # type: ignore[import-untyped]
 
 from database import SessionLocal
+from services.odds_refresh_status import (
+    clear_current_task_id,
+    get_current_task_id,
+    get_last_completed_at,
+)
 from services.pandascore import (
     download_upcoming_lol_fixtures_async,
     fetch_all_lol_leagues_async,
@@ -226,6 +231,23 @@ class OddsRefreshProgressResponse(BaseModel):
     message: str | None = None
 
 
+class OddsRefreshGlobalStatusResponse(BaseModel):
+    in_progress: bool
+    task_id: str | None = None
+    progress: int = 0
+    stage: str = ""
+    last_completed_at: str | None = None
+    next_scheduled_at: str | None = None
+
+
+def _next_quarter_utc() -> datetime:
+    now = _utc_now()
+    minutes = (now.minute // 15 + 1) * 15
+    if minutes >= 60:
+        return (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return now.replace(minute=minutes, second=0, microsecond=0)
+
+
 def require_pandascore_token() -> str:
     try:
         return get_token()
@@ -253,6 +275,68 @@ async def get_odds_refresh_status(
         allowed=False,
         next_available_at=_datetime_to_iso(next_available),
     )
+
+
+@router.get(
+    "/odds-refresh-global-status",
+    summary="Get global odds refresh status (scheduled and in-progress)",
+    response_model=OddsRefreshGlobalStatusResponse,
+)
+async def get_odds_refresh_global_status(
+    token: str = Depends(require_pandascore_token),
+) -> OddsRefreshGlobalStatusResponse:
+    _ = token
+    last_completed_at = get_last_completed_at()
+    next_dt = _next_quarter_utc()
+    next_scheduled_at = _datetime_to_iso(next_dt)
+    current_task_id = get_current_task_id()
+    if not current_task_id:
+        return OddsRefreshGlobalStatusResponse(
+            in_progress=False,
+            last_completed_at=last_completed_at,
+            next_scheduled_at=next_scheduled_at,
+        )
+    try:
+        from worker import celery_app
+
+        result = AsyncResult(current_task_id, app=celery_app)
+        state = str(result.state or "PENDING").upper()
+        info = result.info if isinstance(result.info, dict) else {}
+        if state in ("SUCCESS", "FAILURE", "REVOKED"):
+            clear_current_task_id()
+            return OddsRefreshGlobalStatusResponse(
+                in_progress=False,
+                last_completed_at=last_completed_at,
+                next_scheduled_at=next_scheduled_at,
+            )
+        stage = str(info.get("stage") or state.lower())
+        progress_raw = info.get("progress", 0)
+        try:
+            progress = int(progress_raw)
+        except Exception:
+            progress = 0
+        progress = max(0, min(progress, 100))
+        return OddsRefreshGlobalStatusResponse(
+            in_progress=True,
+            task_id=current_task_id,
+            progress=progress,
+            stage=stage,
+            last_completed_at=last_completed_at,
+            next_scheduled_at=next_scheduled_at,
+        )
+    except Exception as e:
+        logger.warning(
+            "pandascore.odds_refresh_global_status failed: task_id=%s error_type=%s error=%s",
+            current_task_id,
+            type(e).__name__,
+            str(e),
+        )
+        clear_current_task_id()
+        return OddsRefreshGlobalStatusResponse(
+            in_progress=False,
+            last_completed_at=last_completed_at,
+            next_scheduled_at=next_scheduled_at,
+        )
 
 
 @router.post(

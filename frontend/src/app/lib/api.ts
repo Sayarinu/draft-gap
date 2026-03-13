@@ -32,6 +32,15 @@ export interface OddsRefreshProgress {
   message: string | null;
 }
 
+export interface OddsRefreshGlobalStatus {
+  in_progress: boolean;
+  task_id?: string | null;
+  progress?: number;
+  stage?: string;
+  last_completed_at?: string | null;
+  next_scheduled_at?: string | null;
+}
+
 const MISSING_API_URL_MESSAGE =
   "API URL is not set. Configure VITE_API_URL (or NEXT_PUBLIC_API_URL for compatibility) to your backend URL (e.g. http://localhost:8000).";
 
@@ -225,6 +234,24 @@ export async function fetchOddsRefreshProgress(taskId: string): Promise<OddsRefr
     );
   }
   return (await res.json()) as OddsRefreshProgress;
+}
+
+export async function fetchOddsRefreshGlobalStatus(): Promise<OddsRefreshGlobalStatus> {
+  const base = getApiBaseUrl();
+  if (!base) {
+    throw new Error(MISSING_API_URL_MESSAGE);
+  }
+  const res = await fetch(apiUrl("/pandascore/odds-refresh-global-status"), {
+    headers: apiHeaders(),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `Odds refresh global status failed: ${res.status} ${text.slice(0, 200)}`,
+    );
+  }
+  return (await res.json()) as OddsRefreshGlobalStatus;
 }
 
 export async function fetchBettingResults(limit = 100): Promise<Result[]> {

@@ -12,6 +12,16 @@ export function formatRefreshCountdown(target: Date, nowMs: number): string {
   return `Next refresh in ${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+export function formatLastRefreshAgo(completedAt: Date | null, nowMs: number): string {
+  if (!completedAt || Number.isNaN(completedAt.getTime())) return "—";
+  const elapsedMs = nowMs - completedAt.getTime();
+  if (elapsedMs < 0) return "—";
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes === 1) return "1 min ago";
+  return `${minutes} min ago`;
+}
+
 export function formatRefreshStageLabel(stage: string): string {
   const normalized = stage.trim().toLowerCase();
   if (!normalized) return "Refreshing...";

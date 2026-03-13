@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pandas as pd
 
+from celery.result import AsyncResult
+
 from typing_utils import TaskResult
 from database import engine, SessionLocal, init_db
 from services.cloudflare_cache import purge_cloudflare_cache
+from services.odds_refresh_status import (
+    clear_current_task_id,
+    get_current_task_id,
+    set_current_task_id,
+    set_last_completed_at_now,
+)
 from worker import celery_app
 
 logger = logging.getLogger(__name__)
@@ -85,8 +93,30 @@ def task_auto_place_bets() -> TaskResult:
         return {"status": "error", "message": str(e)}
 
 
+def _refresh_pipeline_acquire_slot(task_id: str) -> bool:
+    existing = get_current_task_id()
+    if not existing or existing == task_id:
+        set_current_task_id(task_id)
+        return True
+    result = AsyncResult(existing, app=celery_app)
+    state = (result.state or "PENDING").upper()
+    if state in ("PENDING", "STARTED", "PROGRESS"):
+        return False
+    clear_current_task_id()
+    set_current_task_id(task_id)
+    return True
+
+
 @celery_app.task(name="task_refresh_odds_pipeline", bind=True)
 def task_refresh_odds_pipeline(self) -> TaskResult:
+    task_id = self.request.id
+    if not _refresh_pipeline_acquire_slot(task_id):
+        return {
+            "status": "skipped",
+            "message": "Another refresh is already running",
+            "progress": 0,
+            "stage": "skipped",
+        }
     try:
         self.update_state(state="PROGRESS", meta={"progress": 5, "stage": "queued"})
 
@@ -129,6 +159,9 @@ def task_refresh_odds_pipeline(self) -> TaskResult:
             "progress": 100,
             "stage": "failed",
         }
+    finally:
+        clear_current_task_id()
+        set_last_completed_at_now()
 
 
 @celery_app.task(name="task_settle_bets")

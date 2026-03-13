@@ -56,6 +56,21 @@ app = FastAPI(
 
 origins = [FRONTEND_URL]
 
+DATA_CACHE_PATHS = (
+    "/api/v1/pandascore/lol/upcoming",
+    "/api/v1/pandascore/lol/upcoming-with-odds",
+    "/api/v1/pandascore/lol/live-with-odds",
+)
+CACHE_CONTROL_HEADER = "public, max-age=600, s-maxage=900"
+
+
+class CacheControlMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Response]) -> Response:
+        response = await call_next(request)
+        if request.method == "GET" and request.url.path in DATA_CACHE_PATHS:
+            response.headers["Cache-Control"] = CACHE_CONTROL_HEADER
+        return response
+
 
 class FrontendKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Response]) -> Response:
@@ -76,6 +91,7 @@ class FrontendKeyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+app.add_middleware(CacheControlMiddleware)
 app.add_middleware(FrontendKeyMiddleware)
 app.add_middleware(
     CORSMiddleware,

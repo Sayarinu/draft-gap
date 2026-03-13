@@ -5,12 +5,15 @@ import {
   fetchActiveBets,
   fetchBettingResults,
   fetchLiveWithOdds,
-  fetchOddsRefreshProgress,
-  fetchOddsRefreshStatus,
+  fetchOddsRefreshGlobalStatus,
   fetchUpcomingWithOdds,
-  triggerOddsRefresh,
 } from "@/app/lib/api";
-import { formatRefreshCountdown, formatRefreshStageLabel, parseIsoDate } from "@/app/lib/formatting";
+import {
+  formatLastRefreshAgo,
+  formatRefreshCountdown,
+  formatRefreshStageLabel,
+  parseIsoDate,
+} from "@/app/lib/formatting";
 import {
   getLeagueName,
   getResultLeagueName,
@@ -52,7 +55,8 @@ export const Home = () => {
   const [resultSearchQuery, setResultSearchQuery] = useState("");
   const [isResultsRefreshing, setIsResultsRefreshing] = useState(false);
   const [bankrollRefreshKey, setBankrollRefreshKey] = useState(0);
-  const [nextOddsRefreshAt, setNextOddsRefreshAt] = useState<Date | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
+  const [nextRefreshAt, setNextRefreshAt] = useState<Date | null>(null);
   const [refreshClockMs, setRefreshClockMs] = useState<number>(() => Date.now());
   const [upcomingRefreshProgress, setUpcomingRefreshProgress] = useState(0);
   const [upcomingRefreshStage, setUpcomingRefreshStage] = useState("");
@@ -143,11 +147,13 @@ export const Home = () => {
   const ACTIVE_BETS_POLL_MS = 300_000;
   const RESULTS_POLL_MS = 60_000;
 
-  const isRefreshLocked =
-    nextOddsRefreshAt !== null && refreshClockMs < nextOddsRefreshAt.getTime();
+  const lastRefreshLabel =
+    lastRefreshAt !== null
+      ? formatLastRefreshAgo(lastRefreshAt, refreshClockMs)
+      : "";
   const nextRefreshLabel =
-    nextOddsRefreshAt && isRefreshLocked
-      ? formatRefreshCountdown(nextOddsRefreshAt, refreshClockMs)
+    nextRefreshAt !== null
+      ? formatRefreshCountdown(nextRefreshAt, refreshClockMs)
       : "";
 
   const runUpcomingFetch = (cancelled: boolean) => {
@@ -218,99 +224,7 @@ export const Home = () => {
       });
   };
 
-  const handleUpcomingRefresh = async () => {
-    if (isUpcomingRefreshing) return;
-    setIsUpcomingRefreshing(true);
-    setUpcomingRefreshProgress(0);
-    setUpcomingRefreshStage("Refresh queued");
-    try {
-      const status = await fetchOddsRefreshStatus();
-      if (!status.allowed) {
-        setNextOddsRefreshAt(parseIsoDate(status.next_available_at));
-        setUpcomingRefreshStage("");
-        return;
-      }
-      setNextOddsRefreshAt(null);
-
-      const refreshResult = await triggerOddsRefresh();
-      if (refreshResult.status === "locked") {
-        setNextOddsRefreshAt(parseIsoDate(refreshResult.next_available_at));
-        setUpcomingRefreshStage("");
-        return;
-      }
-
-      const taskId = refreshResult.task_ids[0] ?? "";
-      if (taskId) {
-        const pollStartedAt = Date.now();
-        const maxPollMs = 180_000;
-        let done = false;
-        while (!done && Date.now() - pollStartedAt < maxPollMs) {
-          try {
-            const progress = await fetchOddsRefreshProgress(taskId);
-            setUpcomingRefreshProgress(progress.progress);
-            setUpcomingRefreshStage(formatRefreshStageLabel(progress.stage));
-            if (progress.done) {
-              done = true;
-              if (progress.status === "error") {
-                setError(progress.message || "Refresh pipeline failed");
-              }
-            }
-          } catch (progressError) {
-            console.error("[Draft Gap] Refresh progress poll failed:", progressError);
-          }
-          if (!done) {
-            await new Promise((resolve) => {
-              window.setTimeout(resolve, 1500);
-            });
-          }
-        }
-      }
-
-      await Promise.all([
-        fetchUpcomingWithOdds(100)
-          .then((data) => {
-            setMatches(data);
-            setError(null);
-          })
-          .catch((e) => {
-            console.error("[Draft Gap] Upcoming refresh failed:", e);
-            setError(e instanceof Error ? e.message : "Failed to load matches");
-          }),
-        fetchLiveWithOdds(20)
-          .then((data) => {
-            setLiveMatches(data);
-            setLiveError(null);
-          })
-          .catch((e) => {
-            console.error("[Draft Gap] Live refresh failed:", e);
-            setLiveError(e instanceof Error ? e.message : "Failed to load live matches");
-          }),
-        fetchActiveBets()
-          .then((rows) => {
-            const next: Record<number, ActiveBet> = {};
-            rows.forEach((row) => {
-              next[row.pandascore_match_id] = row;
-            });
-            setActiveBetsByMatchId(next);
-          })
-          .catch(() => setActiveBetsByMatchId({})),
-      ]);
-
-      setBankrollRefreshKey((k) => k + 1);
-      setNextOddsRefreshAt(new Date(Date.now() + 120_000));
-      setUpcomingRefreshProgress(100);
-      setUpcomingRefreshStage("Refresh completed");
-    } catch (e) {
-      console.error("[Draft Gap] Manual refresh failed:", e);
-      setError(e instanceof Error ? e.message : "Failed to refresh odds");
-    } finally {
-      window.setTimeout(() => {
-        setUpcomingRefreshProgress(0);
-        setUpcomingRefreshStage("");
-      }, 800);
-      setIsUpcomingRefreshing(false);
-    }
-  };
+  const handleUpcomingRefresh = () => {};
 
   const handleResultsRefresh = () => {
     setIsResultsRefreshing(true);
@@ -378,39 +292,40 @@ export const Home = () => {
   }, []);
 
   useEffect(() => {
-    if (nextOddsRefreshAt === null) return;
-    const id = setInterval(() => {
-      setRefreshClockMs(Date.now());
-    }, 1000);
+    if (tab !== TabEnum.Upcoming) return;
+    const id = setInterval(() => setRefreshClockMs(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [nextOddsRefreshAt]);
-
-  useEffect(() => {
-    if (nextOddsRefreshAt !== null && Date.now() >= nextOddsRefreshAt.getTime()) {
-      setNextOddsRefreshAt(null);
-    }
-  }, [nextOddsRefreshAt, refreshClockMs]);
+  }, [tab]);
 
   useEffect(() => {
     if (tab !== TabEnum.Upcoming) return;
     let cancelled = false;
+    const pollMs = isUpcomingRefreshing ? 5_000 : 10_000;
     const run = () => {
-      fetchOddsRefreshStatus()
+      fetchOddsRefreshGlobalStatus()
         .then((status) => {
           if (cancelled) return;
-          setNextOddsRefreshAt(status.allowed ? null : parseIsoDate(status.next_available_at));
+          setIsUpcomingRefreshing(status.in_progress);
+          setUpcomingRefreshProgress(status.progress ?? 0);
+          setUpcomingRefreshStage(status.stage ?? "");
+          setLastRefreshAt(parseIsoDate(status.last_completed_at ?? null));
+          setNextRefreshAt(parseIsoDate(status.next_scheduled_at ?? null));
         })
         .catch(() => {
-          if (!cancelled) setNextOddsRefreshAt(null);
+          if (!cancelled) {
+            setIsUpcomingRefreshing(false);
+            setLastRefreshAt(null);
+            setNextRefreshAt(null);
+          }
         });
     };
     run();
-    const id = setInterval(run, 30_000);
+    const id = setInterval(run, pollMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [tab]);
+  }, [tab, isUpcomingRefreshing]);
 
   return (
     <div className="flex flex-col flex-1 bg-concrete">
@@ -429,7 +344,8 @@ export const Home = () => {
                 isRefreshing={isUpcomingRefreshing}
                 refreshProgress={upcomingRefreshProgress}
                 refreshStageLabel={upcomingRefreshStage}
-                refreshButtonDisabled={isRefreshLocked}
+                refreshButtonDisabled
+                lastRefreshLabel={lastRefreshLabel}
                 nextRefreshLabel={nextRefreshLabel}
                 filterPanelOpen={filterPanelOpen}
                 onToggleFilterPanel={() => setFilterPanelOpen((open) => !open)}

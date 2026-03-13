@@ -15,13 +15,8 @@ else:
 celery_app = Celery("tasks", broker=CELERY_BROKER_URL, backend=CELERY_RESULT_BACKEND)
 
 celery_app.conf.beat_schedule = {
-    "refresh-pandascore-upcoming": {
-        "task": "refresh_pandascore_upcoming",
-        "schedule": crontab(minute="*/15"),
-        "options": {"queue": "celery"},
-    },
-    "refresh-bookie-odds": {
-        "task": "refresh_bookie_odds",
+    "refresh-odds-pipeline": {
+        "task": "task_refresh_odds_pipeline",
         "schedule": crontab(minute="*/15"),
         "options": {"queue": "celery"},
     },
