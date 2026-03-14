@@ -48,4 +48,11 @@ celery_app.conf.beat_schedule = {
 }
 celery_app.conf.beat_schedule_filename = "/cache/pandascore/celerybeat-schedule"
 
+
+@celery_app.connect(signal="worker_ready")
+def _on_worker_ready(**kwargs: object) -> None:
+    from tasks import task_refresh_odds_pipeline
+    task_refresh_odds_pipeline.apply_async()
+
+
 import tasks

@@ -86,6 +86,49 @@ def _set_cached_odds(key: str, data: list[dict[str, object]], mtimes: dict[str, 
     _odds_response_cache[key] = (data, dict(mtimes))
 
 
+def _build_upcoming_with_odds_from_matches(
+    matches: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    bookie_odds = read_odds_from_file()
+    out: list[dict[str, object]] = []
+    for m in matches:
+        row = dict(m)
+        team1, team2 = _get_team_names_from_match(m)
+        acr1, acr2 = _get_team_acronyms_from_match(m)
+        odds1, odds2 = find_odds_for_match(
+            team1, team2, bookie_odds, acronym1=acr1, acronym2=acr2
+        )
+        row["bookie_odds_team1"] = odds1
+        row["bookie_odds_team2"] = odds2
+        row["model_odds_team1"] = None
+        row["model_odds_team2"] = None
+        number_of_games = m.get("number_of_games") or 1
+        from ml.series_probability import number_of_games_to_format
+        row["series_format"] = number_of_games_to_format(number_of_games)
+        out.append(row)
+    _attach_v2_model_odds(out)
+    return out
+
+
+def warm_upcoming_odds_cache() -> None:
+    cached = read_upcoming_matches_from_file()
+    if not cached:
+        return
+    matches = cached[:50]
+    if not matches:
+        return
+    out = _build_upcoming_with_odds_from_matches(matches)
+    cache_key = "upcoming:50:"
+    mtimes = _source_mtimes_upcoming()
+    _set_cached_odds(cache_key, out, mtimes)
+    logger.info(
+        "pandascore.warm_upcoming_odds_cache: warmed key=%s count=%s with_model_odds=%s",
+        cache_key,
+        len(out),
+        sum(1 for r in out if r.get("model_odds_team1") is not None),
+    )
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -660,8 +703,13 @@ async def get_upcoming_lol_matches_with_odds(
     mtimes = _source_mtimes_upcoming()
     cached = _get_cached_odds(cache_key, mtimes)
     if cached is not None:
-        logger.info("pandascore.upcoming-with-odds: cache hit key=%s count=%s", cache_key, len(cached))
-        return cached
+        has_model_odds = any(r.get("model_odds_team1") is not None for r in cached)
+        if not has_model_odds:
+            _odds_response_cache.pop(cache_key, None)
+            cached = None
+        else:
+            logger.info("pandascore.upcoming-with-odds: cache hit key=%s count=%s", cache_key, len(cached))
+            return cached
 
     requested_tiers = [t.strip().lower() for t in tier.split(",")] if tier else None
     cached = read_upcoming_matches_from_file()
@@ -746,28 +794,7 @@ async def get_upcoming_lol_matches_with_odds(
         "pandascore.upcoming-with-odds: returning total matches=%s",
         len(matches),
     )
-    bookie_odds = read_odds_from_file()
-    out: list[dict[str, object]] = []
-    for m in matches:
-        row = dict(m)
-        team1, team2 = _get_team_names_from_match(m)
-        acr1, acr2 = _get_team_acronyms_from_match(m)
-        odds1, odds2 = find_odds_for_match(
-            team1, team2, bookie_odds, acronym1=acr1, acronym2=acr2
-        )
-        row["bookie_odds_team1"] = odds1
-        row["bookie_odds_team2"] = odds2
-        row["model_odds_team1"] = None
-        row["model_odds_team2"] = None
-
-        number_of_games = m.get("number_of_games") or 1
-        from ml.series_probability import number_of_games_to_format
-        row["series_format"] = number_of_games_to_format(number_of_games)
-
-        out.append(row)
-
-    _attach_v2_model_odds(out)
-
+    out = _build_upcoming_with_odds_from_matches(matches)
     _set_cached_odds(cache_key, out, _source_mtimes_upcoming())
     return out
 
@@ -785,8 +812,13 @@ async def get_live_lol_matches_with_odds(
     mtimes = _source_mtimes_live()
     cached = _get_cached_odds(cache_key, mtimes)
     if cached is not None:
-        logger.info("pandascore.live-with-odds: cache hit key=%s count=%s", cache_key, len(cached))
-        return cached
+        has_model_odds = any(r.get("model_odds_team1") is not None for r in cached)
+        if not has_model_odds:
+            _odds_response_cache.pop(cache_key, None)
+            cached = None
+        else:
+            logger.info("pandascore.live-with-odds: cache hit key=%s count=%s", cache_key, len(cached))
+            return cached
 
     try:
         raw_matches = await fetch_running_lol_matches_async(per_page=min(per_page, 50), token=token)

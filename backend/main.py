@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from typing import Callable
 
 from pydantic import BaseModel
@@ -116,6 +117,7 @@ def on_startup() -> None:
             exc_info=True,
         )
     _maybe_bootstrap_data()
+    _schedule_warm_odds_cache()
 
 
 def _maybe_bootstrap_data() -> None:
@@ -142,6 +144,31 @@ def _maybe_bootstrap_data() -> None:
             type(e).__name__,
             str(e),
         )
+
+
+def _schedule_warm_odds_cache() -> None:
+    delay_seconds = 15
+    try:
+        delay_str = os.getenv("ODDS_CACHE_WARM_DELAY_SECONDS", "").strip()
+        if delay_str:
+            delay_seconds = max(0, int(delay_str))
+    except ValueError:
+        pass
+
+    def _run_warm() -> None:
+        if delay_seconds > 0:
+            threading.Event().wait(delay_seconds)
+        try:
+            from api.v1.pandascore import warm_upcoming_odds_cache
+            warm_upcoming_odds_cache()
+        except Exception as e:
+            logger.warning(
+                "warm_odds_cache failed: error_type=%s error=%s",
+                type(e).__name__,
+                str(e),
+            )
+
+    threading.Thread(target=_run_warm, daemon=True).start()
 
 
 app.include_router(api_router, prefix="/api/v1")
