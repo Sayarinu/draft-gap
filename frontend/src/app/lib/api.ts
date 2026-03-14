@@ -89,6 +89,22 @@ function requireApiBase(): void {
   }
 }
 
+function apiErrorMessage(context: string, status: number, bodyText: string): string {
+  if (status === 404) {
+    return "Backend not reachable (404). Is the API running and API URL correct?";
+  }
+  if (status === 502 || status === 503) {
+    return "Server temporarily unavailable. Try again in a moment.";
+  }
+  const trimmed = bodyText.trim();
+  const isHtml =
+    trimmed.startsWith("<!") ||
+    trimmed.startsWith("<html") ||
+    trimmed.toLowerCase().includes("<!doctype");
+  const detail = isHtml ? "" : ` — ${trimmed.slice(0, 150)}`;
+  return `${context} failed: ${status}${detail}`;
+}
+
 export async function fetchUpcomingMatches(
   perPage = 100,
   tier: string | null = "s,a",
@@ -100,12 +116,7 @@ export async function fetchUpcomingMatches(
   const res = await fetch(url, { headers: apiHeaders() });
   if (!res.ok) {
     const text = await res.text();
-    const is404 = res.status === 404;
-    throw new Error(
-      is404
-        ? "Backend not reachable (404). Is the API running and API URL configuration correct?"
-        : `Upcoming matches failed: ${res.status} ${text.slice(0, 200)}`,
-    );
+    throw new Error(apiErrorMessage("Upcoming matches", res.status, text));
   }
   const data = (await res.json()) as PandaScoreUpcomingMatch[];
   return data;
@@ -122,12 +133,7 @@ export async function fetchUpcomingWithOdds(
   const res = await fetch(url, { headers: apiHeaders() });
   if (!res.ok) {
     const text = await res.text();
-    const is404 = res.status === 404;
-    throw new Error(
-      is404
-        ? "Backend not reachable (404). Is the API running and API URL configuration correct?"
-        : `Upcoming with odds failed: ${res.status} ${text.slice(0, 200)}`,
-    );
+    throw new Error(apiErrorMessage("Upcoming with odds", res.status, text));
   }
   const data = (await res.json()) as UpcomingMatchWithOdds[];
   return data;
@@ -145,9 +151,7 @@ export async function fetchLiveWithOdds(
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `Live with odds failed: ${res.status} ${text.slice(0, 200)}`,
-    );
+    throw new Error(apiErrorMessage("Live with odds", res.status, text));
   }
   const data = (await res.json()) as LiveMatchWithOdds[];
   return data;
@@ -162,7 +166,7 @@ export async function fetchOddsRefreshStatus(): Promise<OddsRefreshStatus> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Odds refresh status failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Odds refresh status", res.status, text),
     );
   }
   return (await res.json()) as OddsRefreshStatus;
@@ -219,7 +223,7 @@ export async function fetchOddsRefreshProgress(taskId: string): Promise<OddsRefr
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Odds refresh progress failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Odds refresh progress", res.status, text),
     );
   }
   return (await res.json()) as OddsRefreshProgress;
@@ -234,7 +238,7 @@ export async function fetchOddsRefreshGlobalStatus(): Promise<OddsRefreshGlobalS
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Odds refresh global status failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Odds refresh global status", res.status, text),
     );
   }
   return (await res.json()) as OddsRefreshGlobalStatus;
@@ -248,7 +252,7 @@ export async function fetchBettingResults(limit = 100): Promise<Result[]> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Betting results failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Betting results", res.status, text),
     );
   }
   return (await res.json()) as Result[];
@@ -263,7 +267,7 @@ export async function fetchActiveBets(): Promise<ActiveBet[]> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Active bets failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Active bets", res.status, text),
     );
   }
   return (await res.json()) as ActiveBet[];
@@ -277,7 +281,7 @@ export async function fetchBankrollSummary(): Promise<BankrollSummary> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Bankroll summary failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Bankroll summary", res.status, text),
     );
   }
   return (await res.json()) as BankrollSummary;
@@ -298,7 +302,7 @@ export async function fetchPowerRankings(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
-      `Power rankings failed: ${res.status} ${text.slice(0, 200)}`,
+      apiErrorMessage("Power rankings", res.status, text),
     );
   }
   return (await res.json()) as PowerRankingRow[];
