@@ -2,6 +2,7 @@ import os
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_ready
 
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 _DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -49,8 +50,8 @@ celery_app.conf.beat_schedule = {
 celery_app.conf.beat_schedule_filename = "/cache/pandascore/celerybeat-schedule"
 
 
-@celery_app.connect(signal="worker_ready")
-def _on_worker_ready(**kwargs: object) -> None:
+@worker_ready.connect
+def _on_worker_ready(sender: object, **kwargs: object) -> None:
     from tasks import task_refresh_odds_pipeline
     task_refresh_odds_pipeline.apply_async()
 
