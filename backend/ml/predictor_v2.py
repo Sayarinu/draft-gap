@@ -29,6 +29,8 @@ _cached_model: dict[str, object] = {}
 def _load_active_model(session: Session) -> dict[str, object] | None:
     if _cached_model.get("loaded"):
         return _cached_model
+    if _cached_model.get("load_failed"):
+        return None
 
     run = (
         session.query(MLModelRun)
@@ -66,10 +68,16 @@ def _load_active_model(session: Session) -> dict[str, object] | None:
                 "type": "mlp", "feature_names": fnames, "run_id": run.id,
             })
         else:
-            logger.error("Unknown model type: %s", model_type)
+            logger.warning("Unknown model type: %s", model_type)
+            _cached_model["load_failed"] = True
             return None
     except Exception as e:
-        logger.error("Failed to load model %s: %s", artifact_path, e)
+        _cached_model["load_failed"] = True
+        logger.warning(
+            "Model not available (artifact_path=%s): %s. Copy .xgb/.meta to server backend/models/ or run training.",
+            artifact_path,
+            e,
+        )
         return None
 
     return _cached_model
