@@ -73,10 +73,11 @@ def _load_active_model(session: Session) -> dict[str, object] | None:
             return None
     except Exception as e:
         _cached_model["load_failed"] = True
+        err_msg = str(e).split("\n")[0].strip() if str(e) else type(e).__name__
         logger.warning(
             "Model not available (artifact_path=%s): %s. Copy .xgb/.meta to server backend/models/ or run training.",
             artifact_path,
-            e,
+            err_msg,
         )
         return None
 

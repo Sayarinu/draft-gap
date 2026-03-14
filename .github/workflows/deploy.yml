@@ -98,6 +98,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify backend/models in repo (pre-sync)
+        run: |
+          echo "Contents of backend/models/ in this checkout:"
+          ls -la backend/models/ || true
+          echo "---"
+          if [ -n "$(find backend/models -maxdepth 1 -type f \( -name '*.xgb' -o -name '*.meta' \) 2>/dev/null)" ]; then
+            echo "Model artifact files (.xgb/.meta) found; they will be synced to the server."
+          else
+            echo "No .xgb or .meta files in backend/models/. Add them, commit, and push for model odds to deploy."
+          fi
+
       - name: Set image base (lowercase for Docker)
         run: echo "IMAGE_BASE=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
@@ -125,7 +136,7 @@ jobs:
       - name: Sync repository to server
         run: |
           ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "mkdir -p '${{ secrets.DEPLOY_PATH }}' '${{ secrets.DEPLOY_PATH }}/backend/models'"
-          rsync -az --delete \
+          rsync -avz --delete \
             --exclude ".git" \
             --exclude ".github" \
             --exclude ".cursor" \
@@ -135,6 +146,11 @@ jobs:
             --exclude ".venv" \
             -e "ssh -i ~/.ssh/id_ed25519" \
             ./ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
+
+      - name: Verify backend/models on server (post-sync)
+        run: |
+          echo "Contents of backend/models/ on server after sync:"
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "ls -la '${{ secrets.DEPLOY_PATH }}/backend/models/'" || true
 
       - name: Upload production env file
         run: |
