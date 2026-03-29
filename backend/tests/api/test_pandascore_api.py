@@ -1350,6 +1350,37 @@ def test_task_settle_bets_refreshes_results_and_homepage_after_settlement(
     assert calls.index("snapshot_refresh_after_settlement") < calls.index("model_health")
 
 
+def test_run_snapshot_refresh_after_settlement_runs_snapshots_in_process(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "tasks.task_refresh_results_and_bankroll_snapshot",
+        lambda: calls.append("results_bankroll") or {"status": "success", "rb": 1},
+    )
+    monkeypatch.setattr(
+        "tasks.task_refresh_upcoming_snapshot",
+        lambda: calls.append("upcoming") or {"status": "success"},
+    )
+    monkeypatch.setattr(
+        "tasks.task_refresh_live_snapshot",
+        lambda: calls.append("live") or {"status": "success"},
+    )
+    monkeypatch.setattr(
+        "tasks.task_refresh_homepage_manifest",
+        lambda: calls.append("homepage") or {"status": "success", "h": 1},
+    )
+
+    from tasks import run_snapshot_refresh_after_settlement
+
+    out = run_snapshot_refresh_after_settlement()
+
+    assert calls == ["results_bankroll", "upcoming", "live", "homepage"]
+    assert out["results_and_bankroll_snapshot"] == {"status": "success", "rb": 1}
+    assert out["homepage_manifest"] == {"status": "success", "h": 1}
+
+
 def test_worker_schedule_runs_auto_place_and_settlement_every_two_minutes() -> None:
     from worker import celery_app
 

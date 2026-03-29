@@ -358,10 +358,10 @@ def task_refresh_homepage_manifest() -> TaskResult:
 
 
 def run_snapshot_refresh_after_settlement() -> dict[str, object]:
-    results_bankroll = task_refresh_results_and_bankroll_snapshot.apply().get()
-    task_refresh_upcoming_snapshot.apply().get()
-    task_refresh_live_snapshot.apply().get()
-    homepage = task_refresh_homepage_manifest.apply().get()
+    results_bankroll = task_refresh_results_and_bankroll_snapshot()
+    task_refresh_upcoming_snapshot()
+    task_refresh_live_snapshot()
+    homepage = task_refresh_homepage_manifest()
     return {
         "results_and_bankroll_snapshot": results_bankroll,
         "homepage_manifest": homepage,
