@@ -15,24 +15,34 @@ else:
 celery_app = Celery("tasks", broker=CELERY_BROKER_URL, backend=CELERY_RESULT_BACKEND)
 
 celery_app.conf.beat_schedule = {
-    "refresh-pandascore-upcoming": {
-        "task": "refresh_pandascore_upcoming",
-        "schedule": crontab(minute="*/15"),
+    "refresh-live-snapshot": {
+        "task": "task_refresh_live_snapshot",
+        "schedule": crontab(minute="*/2"),
         "options": {"queue": "celery"},
     },
-    "refresh-bookie-odds": {
-        "task": "refresh_bookie_odds",
-        "schedule": crontab(minute="*/15"),
+    "refresh-odds-pipeline": {
+        "task": "task_refresh_odds_pipeline",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "celery"},
+    },
+    "refresh-rankings-snapshot": {
+        "task": "task_refresh_rankings_snapshot",
+        "schedule": crontab(minute=0),
         "options": {"queue": "celery"},
     },
     "auto-place-bets": {
         "task": "task_auto_place_bets",
-        "schedule": crontab(minute="5,20,35,50"),
+        "schedule": crontab(minute="*/2"),
         "options": {"queue": "celery"},
     },
     "settle-bets": {
         "task": "task_settle_bets",
-        "schedule": crontab(minute="*/30"),
+        "schedule": crontab(minute="*/2"),
+        "options": {"queue": "celery"},
+    },
+    "repair-orphaned-bets": {
+        "task": "task_repair_orphaned_bets",
+        "schedule": crontab(minute="*/10"),
         "options": {"queue": "celery"},
     },
     "sync-rosters-daily": {
@@ -50,7 +60,13 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=4, minute=0),
         "options": {"queue": "celery"},
     },
+    "verify-model-health-daily": {
+        "task": "task_verify_model_health",
+        "schedule": crontab(hour=4, minute=45),
+        "options": {"queue": "celery"},
+    },
 }
 celery_app.conf.beat_schedule_filename = "/cache/pandascore/celerybeat-schedule"
+
 
 import tasks

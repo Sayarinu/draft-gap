@@ -1,86 +1,68 @@
-export interface PandaScoreOpponent {
+export interface OddsMatchBase {
   id: number;
-  name: string;
-  location: string | null;
-  slug: string;
-  acronym: string | null;
-  image_url: string | null;
-  dark_mode_image_url?: string | null;
-}
-
-export interface PandaScoreOpponentSlot {
-  type: string;
-  opponent: PandaScoreOpponent;
-}
-
-export interface PandaScoreLeague {
-  id: number;
-  name: string;
-  slug: string;
-  image_url: string | null;
-}
-
-export interface PandaScoreTournament {
-  id: number;
-  name: string;
-  type: string;
-  country: string | null;
-  tier?: string;
-  region?: string | null;
-  begin_at: string;
-  end_at: string | null;
-}
-
-export interface PandaScoreStream {
-  main: boolean;
-  language: string;
-  raw_url: string;
-  embed_url?: string;
-  official?: boolean;
-}
-
-export interface PandaScoreMatchResult {
-  team_id: number;
-  score: number;
-}
-
-export interface PandaScoreUpcomingMatch {
-  id: number;
-  name: string;
-  status: string;
   scheduled_at: string;
-  begin_at: string | null;
-  end_at: string | null;
-  original_scheduled_at: string;
-  modified_at: string;
-  league_id: number;
-  league: PandaScoreLeague;
-  tournament_id?: number;
-  tournament?: PandaScoreTournament;
-  opponents: PandaScoreOpponentSlot[];
-  results: PandaScoreMatchResult[];
-  number_of_games: number;
-  match_type: string;
-  streams_list: PandaScoreStream[];
-  live?: { supported: boolean; url: string | null; opens_at: string | null };
-  forfeit: boolean;
-  draw: boolean;
-  winner_id: number | null;
-  winner: unknown;
-}
-
-export interface UpcomingMatchWithOdds extends PandaScoreUpcomingMatch {
+  league_name: string;
+  team1_name: string;
+  team1_acronym: string | null;
+  team2_name: string;
+  team2_acronym: string | null;
+  stream_url: string | null;
   bookie_odds_team1: number | null;
   bookie_odds_team2: number | null;
+  bookie_odds_status_team1?: string | null;
+  bookie_odds_status_team2?: string | null;
   model_odds_team1: number | null;
   model_odds_team2: number | null;
-  series_format?: "BO1" | "BO3" | "BO5";
+  series_format: "BO1" | "BO3" | "BO5";
+  markets: Array<{
+    market_type: string;
+    selection_key: string;
+    line_value: number | null;
+    decimal_odds: number | null;
+    market_status: string;
+    source_market_name?: string | null;
+    source_selection_name?: string | null;
+  }>;
+  recommended_bet?: {
+    market_type: string;
+    selection_key: string;
+    line_value: number | null;
+    bet_on: string;
+    locked_odds: number;
+    edge: number;
+    stake: number;
+  } | null;
 }
 
-export interface LiveMatchWithOdds extends UpcomingMatchWithOdds {
+export type UpcomingMatchWithOdds = OddsMatchBase;
+
+export interface LiveMatchWithOdds extends OddsMatchBase {
   series_score_team1: number;
   series_score_team2: number;
-  series_format: "BO1" | "BO3" | "BO5";
   pre_match_odds_team1: number | null;
   pre_match_odds_team2: number | null;
+  live_recommendation?: {
+    rebet_allowed?: boolean;
+    confidence?: number;
+    base_game_win_prob_a?: number;
+    adjusted_game_win_prob_a?: number;
+    series_win_prob_a?: number;
+    series_win_prob_b?: number;
+    mid_series_delta?: number;
+    edge_vs_market_team1?: number | null;
+    edge_vs_market_team2?: number | null;
+    incremental_ev_team1?: number | null;
+    incremental_ev_team2?: number | null;
+  } | null;
 }
+
+export interface PaginatedResponse<TItem> {
+  items: TItem[];
+  page: number;
+  per_page: number;
+  total_items: number;
+  total_pages: number;
+  available_leagues?: string[];
+}
+
+export type PaginatedMatchesResponse<TItem> = PaginatedResponse<TItem>;

@@ -9,7 +9,11 @@ interface TabButtonProps {
 export const TabButton = ({ tab, setTab, isActiveTab }: TabButtonProps) => {
   return (
     <button
-      className={`px-4 py-2 rounded-md border ${isActiveTab ? "bg-gold text-deepdark" : "bg-deepdark text-gold"}`}
+      className={`rounded-md border px-4 py-2 ${
+        isActiveTab
+          ? "border-gold bg-gold/10 text-gold"
+          : "border-coffee bg-deepdark text-taupe hover:text-cream"
+      }`}
       onClick={() => setTab(tab)}
     >
       {tab}

@@ -11,8 +11,8 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-POSTGRES_USER="${POSTGRES_USER:-postgres}"
-POSTGRES_DB="${POSTGRES_DB:-draftgap}"
+POSTGRES_USER="${POSTGRES_USER:-draftgap}"
+POSTGRES_DB="${POSTGRES_DB:-draftgap_db}"
 
 mkdir -p "$BACKUP_DIR"
 

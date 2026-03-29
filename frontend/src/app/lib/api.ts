@@ -1,11 +1,18 @@
 import type {
   LiveMatchWithOdds,
-  PandaScoreUpcomingMatch,
+  PaginatedResponse,
+  PaginatedMatchesResponse,
   UpcomingMatchWithOdds,
 } from "@/app/types/pandascore";
-import type { ActiveBet, BankrollSummary } from "@/app/types/Betting";
+import type {
+  ActiveBet,
+  ActiveSeriesPositionGroup,
+  BankrollSummary,
+  MatchBettingStatus,
+  OpenBetScheduleStatus,
+} from "@/app/types/Betting";
 import type { PowerRankingRow } from "@/app/types/PowerRanking";
-import type { Result } from "@/app/types/Result";
+import type { Result, ResultsAnalytics } from "@/app/types/Result";
 
 export interface OddsRefreshStatus {
   allowed: boolean;
@@ -32,8 +39,50 @@ export interface OddsRefreshProgress {
   message: string | null;
 }
 
+export interface OddsRefreshGlobalStatus {
+  in_progress: boolean;
+  task_id?: string | null;
+  progress?: number;
+  stage?: string;
+  last_completed_at?: string | null;
+  next_scheduled_at?: string | null;
+}
+
+export interface HomepageBootstrapResponse {
+  generated_at: string | null;
+  results_generated_at: string | null;
+  upcoming: PaginatedMatchesResponse<UpcomingMatchWithOdds>;
+  live: PaginatedMatchesResponse<LiveMatchWithOdds>;
+  bankroll: BankrollSummary | null;
+  active_bets: ActiveBet[];
+  active_positions_by_series: ActiveSeriesPositionGroup[];
+  match_betting_statuses: MatchBettingStatus[];
+  power_rankings_preview: PowerRankingRow[];
+  refresh_status: OddsRefreshGlobalStatus;
+  section_status?: Record<string, Record<string, unknown>>;
+}
+
+interface OddsQueryOptions {
+  page?: number;
+  perPage?: number;
+  tier?: string | null;
+  search?: string;
+  leagues?: string[];
+}
+
+interface HistoryQueryOptions {
+  page?: number;
+  perPage?: number;
+  search?: string;
+  leagues?: string[];
+}
+
 const MISSING_API_URL_MESSAGE =
   "API URL is not set. Configure VITE_API_URL (or NEXT_PUBLIC_API_URL for compatibility) to your backend URL (e.g. http://localhost:8000).";
+
+function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
 
 function readEnv(name: string): string {
   const viteValue = import.meta.env[name as keyof ImportMetaEnv];
@@ -45,11 +94,17 @@ function readEnv(name: string): string {
   return processValue ?? "";
 }
 
-function getApiBaseUrl(): string {
+export function getApiBaseUrl(): string {
   const env = readEnv("VITE_API_URL") || readEnv("NEXT_PUBLIC_API_URL");
-  if (env) return env.replace(/\/$/, "");
-  if (typeof window !== "undefined" && window.location?.hostname === "localhost") {
-    return "http://localhost:8000";
+  if (env) {
+    return env.replace(/\/$/, "");
+  }
+  if (typeof window !== "undefined") {
+    const hostname = window.location?.hostname ?? "";
+    if (isLocalHostname(hostname)) {
+      return "http://localhost:8000";
+    }
+    return "";
   }
   return "";
 }
@@ -57,6 +112,9 @@ function getApiBaseUrl(): string {
 function apiUrl(path: string): string {
   const base = getApiBaseUrl();
   const segment = path.startsWith("/") ? path : `/${path}`;
+  if (!base) {
+    return `/api/v1${segment}`;
+  }
   if (base.endsWith("/api/v1")) {
     return `${base}${segment}`;
   }
@@ -64,110 +122,115 @@ function apiUrl(path: string): string {
 }
 
 function apiHeaders(extra: HeadersInit = {}): HeadersInit {
-  const secret = readEnv("VITE_API_SECRET") || readEnv("NEXT_PUBLIC_API_SECRET");
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (secret) headers["X-Api-Key"] = secret;
-  return { ...headers, ...(extra as Record<string, string>) };
+  return {
+    Accept: "application/json",
+    ...(extra as Record<string, string>),
+  };
 }
 
-export async function fetchUpcomingMatches(
-  perPage = 100,
-  tier: string | null = "s,a",
-): Promise<PandaScoreUpcomingMatch[]> {
+async function fetchJson<T>(input: string, init: RequestInit, context: string): Promise<T> {
+  const response = await fetch(input, {
+    ...init,
+    headers: apiHeaders(init.headers),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(apiErrorMessage(context, response.status, text));
+  }
+  return (await response.json()) as T;
+}
+
+function requireApiBase(): void {
   const base = getApiBaseUrl();
-  if (!base) {
+  if (!base && typeof window === "undefined") {
     throw new Error(MISSING_API_URL_MESSAGE);
   }
-  const params = new URLSearchParams({ per_page: String(perPage) });
-  if (tier) params.set("tier", tier);
-  const url = `${apiUrl("/pandascore/lol/upcoming")}?${params.toString()}`;
-  const res = await fetch(url, { headers: apiHeaders() });
-  if (!res.ok) {
-    const text = await res.text();
-    const is404 = res.status === 404;
-    throw new Error(
-      is404
-        ? "Backend not reachable (404). Is the API running and API URL configuration correct?"
-        : `Upcoming matches failed: ${res.status} ${text.slice(0, 200)}`,
-    );
+}
+
+function apiErrorMessage(context: string, status: number, bodyText: string): string {
+  if (status === 404) {
+    return "Backend not reachable (404). Is the API running and API URL correct?";
   }
-  const data = (await res.json()) as PandaScoreUpcomingMatch[];
-  return data;
+  if (status === 502 || status === 503) {
+    return "Server temporarily unavailable. Try again in a moment.";
+  }
+  const trimmed = bodyText.trim();
+  const isHtml =
+    trimmed.startsWith("<!") ||
+    trimmed.startsWith("<html") ||
+    trimmed.toLowerCase().includes("<!doctype");
+  const detail = isHtml ? "" : ` — ${trimmed.slice(0, 150)}`;
+  return `${context} failed: ${status}${detail}`;
+}
+
+function appendFilterParams(
+  params: URLSearchParams,
+  options: {
+    search?: string;
+    leagues?: string[];
+  },
+): void {
+  const search = options.search?.trim();
+  if (search) params.set("search", search);
+  if (options.leagues && options.leagues.length > 0) {
+    params.set("league", options.leagues.join(","));
+  }
 }
 
 export async function fetchUpcomingWithOdds(
-  perPage = 100,
-  tier: string | null = "s,a",
-): Promise<UpcomingMatchWithOdds[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-  const params = new URLSearchParams({ per_page: String(perPage) });
+  {
+    perPage = 10,
+    page = 1,
+    tier = "s,a",
+    search = "",
+    leagues = [],
+  }: OddsQueryOptions = {},
+): Promise<PaginatedMatchesResponse<UpcomingMatchWithOdds>> {
+  requireApiBase();
+  const params = new URLSearchParams({
+    per_page: String(perPage),
+    page: String(page),
+  });
   if (tier) params.set("tier", tier);
+  appendFilterParams(params, { search, leagues });
   const url = `${apiUrl("/pandascore/lol/upcoming-with-odds")}?${params.toString()}`;
-  const res = await fetch(url, { headers: apiHeaders() });
-  if (!res.ok) {
-    const text = await res.text();
-    const is404 = res.status === 404;
-    throw new Error(
-      is404
-        ? "Backend not reachable (404). Is the API running and API URL configuration correct?"
-        : `Upcoming with odds failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  const data = (await res.json()) as UpcomingMatchWithOdds[];
-  return data;
+  return fetchJson<PaginatedMatchesResponse<UpcomingMatchWithOdds>>(url, {}, "Upcoming with odds");
+}
+
+export async function fetchHomepageBootstrap(): Promise<HomepageBootstrapResponse> {
+  requireApiBase();
+  return fetchJson<HomepageBootstrapResponse>(apiUrl("/homepage/bootstrap"), {}, "Homepage bootstrap");
 }
 
 export async function fetchLiveWithOdds(
-  perPage = 20,
-): Promise<LiveMatchWithOdds[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-  const params = new URLSearchParams({ per_page: String(perPage) });
-  const url = `${apiUrl("/pandascore/lol/live-with-odds")}?${params.toString()}`;
-  const res = await fetch(url, {
-    headers: apiHeaders(),
-    cache: "no-store",
+  {
+    perPage = 20,
+    page = 1,
+    search = "",
+    leagues = [],
+  }: OddsQueryOptions = {},
+): Promise<PaginatedMatchesResponse<LiveMatchWithOdds>> {
+  requireApiBase();
+  const params = new URLSearchParams({
+    per_page: String(perPage),
+    page: String(page),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Live with odds failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  const data = (await res.json()) as LiveMatchWithOdds[];
-  return data;
+  appendFilterParams(params, { search, leagues });
+  const url = `${apiUrl("/pandascore/lol/live-with-odds")}?${params.toString()}`;
+  return fetchJson<PaginatedMatchesResponse<LiveMatchWithOdds>>(url, {
+    cache: "no-store",
+  }, "Live with odds");
 }
 
 export async function fetchOddsRefreshStatus(): Promise<OddsRefreshStatus> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-
-  const res = await fetch(apiUrl("/pandascore/odds-refresh-status"), {
-    headers: apiHeaders(),
+  requireApiBase();
+  return fetchJson<OddsRefreshStatus>(apiUrl("/pandascore/odds-refresh-status"), {
     cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Odds refresh status failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  return (await res.json()) as OddsRefreshStatus;
+  }, "Odds refresh status");
 }
 
 export async function triggerOddsRefresh(): Promise<OddsRefreshAccepted | OddsRefreshLocked> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-
+  requireApiBase();
   const res = await fetch(apiUrl("/pandascore/refresh-odds"), {
     method: "POST",
     headers: apiHeaders(),
@@ -208,97 +271,78 @@ export async function triggerOddsRefresh(): Promise<OddsRefreshAccepted | OddsRe
 }
 
 export async function fetchOddsRefreshProgress(taskId: string): Promise<OddsRefreshProgress> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-
+  requireApiBase();
   const params = new URLSearchParams({ task_id: taskId });
-  const res = await fetch(`${apiUrl("/pandascore/refresh-odds-progress")}?${params.toString()}`, {
-    headers: apiHeaders(),
+  return fetchJson<OddsRefreshProgress>(`${apiUrl("/pandascore/refresh-odds-progress")}?${params.toString()}`, {
     cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Odds refresh progress failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  return (await res.json()) as OddsRefreshProgress;
+  }, "Odds refresh progress");
 }
 
-export async function fetchBettingResults(limit = 100): Promise<Result[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-  const params = new URLSearchParams({ limit: String(limit) });
+export async function fetchOddsRefreshGlobalStatus(): Promise<OddsRefreshGlobalStatus> {
+  requireApiBase();
+  return fetchJson<OddsRefreshGlobalStatus>(apiUrl("/pandascore/odds-refresh-global-status"), {
+    cache: "no-store",
+  }, "Odds refresh global status");
+}
+
+export async function fetchBettingHistory(
+  {
+    page = 1,
+    perPage = 50,
+    search = "",
+    leagues = [],
+  }: HistoryQueryOptions = {},
+): Promise<PaginatedResponse<Result>> {
+  requireApiBase();
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  });
+  appendFilterParams(params, { search, leagues });
   const url = `${apiUrl("/betting/results")}?${params.toString()}`;
-  const res = await fetch(url, { headers: apiHeaders() });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Betting results failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  return (await res.json()) as Result[];
+  return fetchJson<PaginatedResponse<Result>>(url, {}, "Betting results");
+}
+
+export async function fetchResultsAnalytics(
+  {
+    search = "",
+    leagues = [],
+  }: HistoryQueryOptions = {},
+): Promise<ResultsAnalytics> {
+  requireApiBase();
+  const params = new URLSearchParams();
+  appendFilterParams(params, { search, leagues });
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return fetchJson<ResultsAnalytics>(`${apiUrl("/betting/results/analytics")}${suffix}`, {}, "Results analytics");
 }
 
 export async function fetchActiveBets(): Promise<ActiveBet[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-  const res = await fetch(apiUrl("/betting/bets/active"), {
-    headers: apiHeaders(),
+  requireApiBase();
+  return fetchJson<ActiveBet[]>(apiUrl("/betting/bets/active"), {
     cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Active bets failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  return (await res.json()) as ActiveBet[];
+  }, "Active bets");
+}
+
+export async function fetchOpenBetStatuses(): Promise<OpenBetScheduleStatus[]> {
+  requireApiBase();
+  return fetchJson<OpenBetScheduleStatus[]>(apiUrl("/betting/bets/open-status"), {
+    cache: "no-store",
+  }, "Open bet statuses");
 }
 
 export async function fetchBankrollSummary(): Promise<BankrollSummary> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
-  const res = await fetch(apiUrl("/betting/bankroll"), {
-    headers: apiHeaders(),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Bankroll summary failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  return (await res.json()) as BankrollSummary;
+  requireApiBase();
+  return fetchJson<BankrollSummary>(apiUrl("/betting/bankroll"), {}, "Bankroll summary");
 }
 
 export async function fetchPowerRankings(
   league?: string,
 ): Promise<PowerRankingRow[]> {
-  const base = getApiBaseUrl();
-  if (!base) {
-    throw new Error(MISSING_API_URL_MESSAGE);
-  }
+  requireApiBase();
   const params = new URLSearchParams();
   if (league && league !== "all") {
     params.set("league", league);
   }
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  const res = await fetch(`${apiUrl("/rankings/power")}${suffix}`, {
-    headers: apiHeaders(),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `Power rankings failed: ${res.status} ${text.slice(0, 200)}`,
-    );
-  }
-  return (await res.json()) as PowerRankingRow[];
+  return fetchJson<PowerRankingRow[]>(`${apiUrl("/rankings/power")}${suffix}`, {}, "Power rankings");
 }

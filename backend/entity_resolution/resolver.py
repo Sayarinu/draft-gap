@@ -90,6 +90,7 @@ class EntityResolver:
         raw_name: str,
         source_system: str = "oracleselixir",
         *,
+        allow_mutations: bool = True,
         pandascore_id: int | None = None,
         abbreviation: str | None = None,
         region: str | None = None,
@@ -106,7 +107,14 @@ class EntityResolver:
                 ).get(cached_id)
             return None
 
-        team = self._resolve_team_inner(raw, source_system, pandascore_id=pandascore_id, abbreviation=abbreviation, region=region)
+        team = self._resolve_team_inner(
+            raw,
+            source_system,
+            allow_mutations=allow_mutations,
+            pandascore_id=pandascore_id,
+            abbreviation=abbreviation,
+            region=region,
+        )
         self._cache_set("team", raw, team.id if team else None)
         return team
 
@@ -115,57 +123,62 @@ class EntityResolver:
         raw: str,
         source_system: str,
         *,
+        allow_mutations: bool,
         pandascore_id: int | None = None,
         abbreviation: str | None = None,
         region: str | None = None,
     ) -> Team | None:
-        from models_ml import Team as TeamModel
-
         canonical = TEAM_ALIASES.get(raw.lower().strip())
         if canonical:
             team = find_team_by_alias(self._session, canonical)
             if not team:
+                if not allow_mutations:
+                    return None
                 team = get_or_create_team(
                     self._session, canonical, abbreviation=abbreviation, region=region,
                 )
-            add_team_alias(self._session, team.id, raw, source_system)
-            log_resolution(
-                self._session, raw_value=raw, entity_type="team",
-                resolved_id=team.id, method="manual", confidence=1.0,
-                source_system=source_system,
-            )
+            if allow_mutations:
+                add_team_alias(self._session, team.id, raw, source_system)
+                log_resolution(
+                    self._session, raw_value=raw, entity_type="team",
+                    resolved_id=team.id, method="manual", confidence=1.0,
+                    source_system=source_system,
+                )
             return team
 
         if pandascore_id is not None:
             team = find_team_by_pandascore_id(self._session, pandascore_id)
             if team:
-                add_team_alias(self._session, team.id, raw, source_system)
-                log_resolution(
-                    self._session, raw_value=raw, entity_type="team",
-                    resolved_id=team.id, method="pandascore_id", confidence=1.0,
-                    source_system=source_system,
-                )
+                if allow_mutations:
+                    add_team_alias(self._session, team.id, raw, source_system)
+                    log_resolution(
+                        self._session, raw_value=raw, entity_type="team",
+                        resolved_id=team.id, method="pandascore_id", confidence=1.0,
+                        source_system=source_system,
+                    )
                 return team
 
         team = find_team_by_alias(self._session, raw)
         if team:
-            add_team_alias(self._session, team.id, raw, source_system)
-            log_resolution(
-                self._session, raw_value=raw, entity_type="team",
-                resolved_id=team.id, method="exact", confidence=1.0,
-                source_system=source_system,
-            )
+            if allow_mutations:
+                add_team_alias(self._session, team.id, raw, source_system)
+                log_resolution(
+                    self._session, raw_value=raw, entity_type="team",
+                    resolved_id=team.id, method="exact", confidence=1.0,
+                    source_system=source_system,
+                )
             return team
 
         if abbreviation:
             team = find_team_by_abbreviation(self._session, abbreviation)
             if team:
-                add_team_alias(self._session, team.id, raw, source_system)
-                log_resolution(
-                    self._session, raw_value=raw, entity_type="team",
-                    resolved_id=team.id, method="abbreviation", confidence=0.95,
-                    source_system=source_system,
-                )
+                if allow_mutations:
+                    add_team_alias(self._session, team.id, raw, source_system)
+                    log_resolution(
+                        self._session, raw_value=raw, entity_type="team",
+                        resolved_id=team.id, method="abbreviation", confidence=0.95,
+                        source_system=source_system,
+                    )
                 return team
 
         all_teams = get_all_teams(self._session)
@@ -183,13 +196,17 @@ class EntityResolver:
                     best_team = t
 
         if best_score >= FUZZY_THRESHOLD and best_team is not None:
-            add_team_alias(self._session, best_team.id, raw, source_system)
-            log_resolution(
-                self._session, raw_value=raw, entity_type="team",
-                resolved_id=best_team.id, method="fuzzy",
-                confidence=best_score / 100.0, source_system=source_system,
-            )
+            if allow_mutations:
+                add_team_alias(self._session, best_team.id, raw, source_system)
+                log_resolution(
+                    self._session, raw_value=raw, entity_type="team",
+                    resolved_id=best_team.id, method="fuzzy",
+                    confidence=best_score / 100.0, source_system=source_system,
+                )
             return best_team
+
+        if not allow_mutations:
+            return None
 
         team = get_or_create_team(
             self._session, raw, abbreviation=abbreviation, region=region,

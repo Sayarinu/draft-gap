@@ -1,1 +1,11 @@
 celerybeat-schedule*
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.coverage
+.git
+test.sqlite3
+tests/
+models/*
+!models/.gitkeep

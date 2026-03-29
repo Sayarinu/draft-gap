@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -12,10 +12,11 @@ import joblib
 import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
-from sklearn.calibration import calibration_curve
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 from sklearn.preprocessing import StandardScaler
+
+from ml.model_manifest import get_model_dir, write_model_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,6 @@ logger = logging.getLogger(__name__)
 class _ClassifierWithPredictProba(Protocol):
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray: ...
-
-
-def _get_model_dir() -> Path:
-    d = Path(os.environ.get("ML_MODEL_PATH", "./models"))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _eval_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
@@ -293,7 +288,7 @@ def train_all_models(
     metadata: pd.DataFrame,
     feature_names: list[str],
 ) -> list[dict[str, object]]:
-    model_dir = _get_model_dir()
+    model_dir = get_model_dir()
     splits = split_data(X, y, metadata, feature_names)
     X_train, y_train = splits["train"]
     X_val, y_val = splits["val"]
@@ -305,7 +300,7 @@ def train_all_models(
     )
 
     results: list[dict[str, object]] = []
-    version = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    version = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     logger.info("Training Logistic Regression...")
     t0 = time.time()
@@ -398,6 +393,16 @@ def train_all_models(
 
     best = max(results, key=_selection_score)
     best["is_active"] = True
+    for result in results:
+        val_metrics = result.get("val_metrics", result["train_metrics"])
+        test_metrics = result.get("test_metrics", {})
+        result["promotion_metrics"] = {
+            "selection_score": _selection_score(result),
+            "validation_log_loss": float(val_metrics.get("log_loss", 0.0)),
+            "validation_roc_auc": float(val_metrics.get("roc_auc", 0.5)),
+            "test_log_loss": float(test_metrics.get("log_loss", 0.0)) if test_metrics else None,
+            "test_roc_auc": float(test_metrics.get("roc_auc", 0.5)) if test_metrics else None,
+        }
     val_m = best.get("val_metrics", best["train_metrics"])
     logger.info(
         "Best model: %s (val_auc=%.4f, val_log_loss=%.4f)",
@@ -407,12 +412,73 @@ def train_all_models(
     return results
 
 
+def _run_selection_score(run: object) -> float:
+    val_auc = float(getattr(run, "val_roc_auc", None) or getattr(run, "train_roc_auc", None) or 0.5)
+    test_acc = float(getattr(run, "test_accuracy", None) or getattr(run, "val_accuracy", None) or 0.5)
+    val_logloss = float(getattr(run, "val_log_loss", None) or getattr(run, "train_log_loss", None) or 0.7)
+    return (val_auc * 0.4) + (test_acc * 0.4) - (val_logloss * 0.2)
+
+
+def _candidate_selection_score(result: dict[str, object]) -> float:
+    promotion_metrics = result.get("promotion_metrics", {})
+    if isinstance(promotion_metrics, dict) and "selection_score" in promotion_metrics:
+        return float(promotion_metrics["selection_score"])
+    val_metrics = result.get("val_metrics", result.get("train_metrics", {}))
+    test_metrics = result.get("test_metrics", {})
+    return (
+        float(val_metrics.get("roc_auc", 0.5)) * 0.4
+        + float(test_metrics.get("accuracy", 0.5)) * 0.4
+        - float(val_metrics.get("log_loss", 0.7)) * 0.2
+    )
+
+
+def _candidate_beats_active(
+    candidate: dict[str, object],
+    current_active: object | None,
+) -> bool:
+    if current_active is None:
+        return True
+
+    candidate_val = candidate.get("val_metrics", candidate.get("train_metrics", {}))
+    candidate_test = candidate.get("test_metrics", {})
+    candidate_auc = float(candidate_val.get("roc_auc", 0.5))
+    candidate_log_loss = float(candidate_val.get("log_loss", 0.7))
+    candidate_test_auc = float(candidate_test.get("roc_auc", candidate_auc))
+    candidate_test_log_loss = float(candidate_test.get("log_loss", candidate_log_loss))
+    candidate_score = _candidate_selection_score(candidate)
+
+    current_auc = float(getattr(current_active, "val_roc_auc", None) or getattr(current_active, "train_roc_auc", None) or 0.5)
+    current_log_loss = float(getattr(current_active, "val_log_loss", None) or getattr(current_active, "train_log_loss", None) or 0.7)
+    current_test_auc = float(getattr(current_active, "test_roc_auc", None) or current_auc)
+    current_test_log_loss = float(getattr(current_active, "test_log_loss", None) or current_log_loss)
+    current_score = _run_selection_score(current_active)
+
+    score_improved = candidate_score >= current_score + 0.002
+    auc_not_worse = candidate_auc >= current_auc - 0.002 and candidate_test_auc >= current_test_auc - 0.01
+    log_loss_not_worse = (
+        candidate_log_loss <= current_log_loss + 0.01
+        and candidate_test_log_loss <= current_test_log_loss + 0.02
+    )
+    primary_metric_improved = (
+        candidate_auc >= current_auc + 0.002
+        or candidate_log_loss <= current_log_loss - 0.005
+    )
+    return score_improved and auc_not_worse and log_loss_not_worse and primary_metric_improved
+
+
 def persist_model_runs(
     session: Session, results: list[dict[str, object]]
 ) -> list[int]:
     from models_ml import MLModelRun
 
-    run_ids = []
+    run_ids: list[int] = []
+    current_active = (
+        session.query(MLModelRun)
+        .filter(MLModelRun.is_active.is_(True))
+        .order_by(MLModelRun.created_at.desc())
+        .first()
+    )
+
     for r in results:
         train_m = r.get("train_metrics", {})
         val_m = r.get("val_metrics", {})
@@ -422,7 +488,7 @@ def persist_model_runs(
             model_type=r["model_type"],
             model_version=r["model_version"],
             artifact_path=r["artifact_path"],
-            is_active=r.get("is_active", False),
+            is_active=False,
             train_accuracy=train_m.get("accuracy"),
             val_accuracy=val_m.get("accuracy"),
             test_accuracy=test_m.get("accuracy"),
@@ -441,6 +507,49 @@ def persist_model_runs(
         session.add(run)
         session.flush()
         run_ids.append(run.id)
+        r["run_id"] = run.id
+        r["persisted_run"] = run
+
+    candidate = max(results, key=_candidate_selection_score) if results else None
+    promoted_run = None
+    if candidate is not None:
+        candidate_run = candidate.get("persisted_run")
+        if candidate_run is not None and _candidate_beats_active(candidate, current_active):
+            session.query(MLModelRun).filter(MLModelRun.is_active.is_(True)).update(
+                {MLModelRun.is_active: False},
+                synchronize_session=False,
+            )
+            candidate_run.is_active = True
+            promoted_run = candidate_run
+        elif current_active is not None:
+            current_active.is_active = True
 
     session.commit()
+    if promoted_run is not None:
+        write_model_manifest(
+            source_run_id=promoted_run.id,
+            model_type=promoted_run.model_type,
+            model_version=promoted_run.model_version,
+            artifact_path=promoted_run.artifact_path,
+            trained_at=getattr(promoted_run, "created_at", None) or datetime.now(timezone.utc),
+        )
+    try:
+        from ml.predictor_v2 import clear_prediction_caches
+        clear_prediction_caches()
+    except Exception:
+        logger.debug("Could not clear prediction caches after persisting model runs", exc_info=True)
+
+    if promoted_run is not None:
+        logger.info(
+            "Promoted model run_id=%s type=%s version=%s",
+            promoted_run.id,
+            promoted_run.model_type,
+            promoted_run.model_version,
+        )
+    elif candidate is not None and current_active is not None:
+        logger.info(
+            "Retained active model run_id=%s version=%s after candidate comparison",
+            current_active.id,
+            current_active.model_version,
+        )
     return run_ids

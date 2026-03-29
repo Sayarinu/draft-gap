@@ -2,15 +2,48 @@ import io
 import logging
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
+
+from celery.result import AsyncResult
 
 from typing_utils import TaskResult
 from database import engine, SessionLocal, init_db
 from services.cloudflare_cache import purge_cloudflare_cache
+from services.homepage_snapshots import (
+    build_bankroll_summary_payload,
+    build_betting_results_payload,
+    build_homepage_manifest_payload,
+    build_live_snapshot_payload,
+    build_power_rankings_payload,
+    build_snapshot_version,
+    build_upcoming_snapshot_payload,
+    create_snapshot,
+    record_snapshot_failure,
+    utc_now,
+)
+from models_ml import (
+    BankrollSummarySnapshot,
+    BettingResultsSnapshot,
+    HomepageSnapshotManifest,
+    LiveWithOddsSnapshot,
+    PowerRankingsSnapshot,
+    UpcomingWithOddsSnapshot,
+)
+from services.odds_refresh_status import (
+    clear_current_task_id,
+    get_current_task_id,
+    set_current_task_id,
+    set_last_completed_at_now,
+)
 from worker import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+def _task_window() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @celery_app.task(name="refresh_pandascore_upcoming")
@@ -20,8 +53,6 @@ def refresh_pandascore_upcoming(tiers: str | None = None) -> TaskResult:
     tier_list = [t.strip() for t in tiers.split(",")] if tiers else None
     try:
         summary = download_upcoming_lol_fixtures(tiers=tier_list)
-        if not summary.get("errors"):
-            purge_cloudflare_cache(reason="refresh_pandascore_upcoming")
         return {
             "status": "error" if summary.get("errors") else "success",
             "saved": summary["saved"],
@@ -44,7 +75,6 @@ def refresh_thunderpick_odds() -> TaskResult:
 
     try:
         results = scrape_lol_odds()
-        purge_cloudflare_cache(reason="refresh_thunderpick_odds")
         return {
             "status": "success",
             "matches_with_odds": len(results),
@@ -85,8 +115,283 @@ def task_auto_place_bets() -> TaskResult:
         return {"status": "error", "message": str(e)}
 
 
+@celery_app.task(name="task_repair_orphaned_bets")
+def task_repair_orphaned_bets() -> TaskResult:
+    try:
+        from betting.bet_manager import repair_orphaned_bets
+
+        init_db()
+        session = SessionLocal()
+        try:
+            summary = repair_orphaned_bets(session)
+            results_and_bankroll_snapshot = task_refresh_results_and_bankroll_snapshot()
+            homepage_manifest = task_refresh_homepage_manifest()
+            return {
+                "status": "success",
+                "message": "Orphaned bet repair completed",
+                "results": [summary],
+                "results_and_bankroll_snapshot": results_and_bankroll_snapshot,
+                "homepage_manifest": homepage_manifest,
+            }
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error("task_repair_orphaned_bets failed: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@celery_app.task(name="task_refresh_upcoming_snapshot")
+def task_refresh_upcoming_snapshot() -> TaskResult:
+    started_at = _task_window()
+    version = build_snapshot_version("upcoming")
+    init_db()
+    session = SessionLocal()
+    try:
+        payload = build_upcoming_snapshot_payload()
+        snapshot = create_snapshot(
+            session,
+            UpcomingWithOddsSnapshot,
+            payload=payload,
+            version=version,
+            status="success",
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            activate=True,
+        )
+        return {
+            "status": "success",
+            "snapshot_version": snapshot.version,
+            "items": len(payload.get("items", [])),
+        }
+    except Exception as e:
+        logger.error("task_refresh_upcoming_snapshot failed: %s", e, exc_info=True)
+        session.rollback()
+        record_snapshot_failure(
+            session,
+            UpcomingWithOddsSnapshot,
+            version=version,
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            message=str(e),
+        )
+        return {"status": "error", "message": str(e)}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="task_refresh_live_snapshot")
+def task_refresh_live_snapshot() -> TaskResult:
+    started_at = _task_window()
+    version = build_snapshot_version("live")
+    init_db()
+    session = SessionLocal()
+    try:
+        payload = build_live_snapshot_payload()
+        snapshot = create_snapshot(
+            session,
+            LiveWithOddsSnapshot,
+            payload=payload,
+            version=version,
+            status="success",
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            activate=True,
+        )
+        return {
+            "status": "success",
+            "snapshot_version": snapshot.version,
+            "items": len(payload.get("items", [])),
+        }
+    except Exception as e:
+        logger.error("task_refresh_live_snapshot failed: %s", e, exc_info=True)
+        session.rollback()
+        record_snapshot_failure(
+            session,
+            LiveWithOddsSnapshot,
+            version=version,
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            message=str(e),
+        )
+        return {"status": "error", "message": str(e)}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="task_refresh_results_and_bankroll_snapshot")
+def task_refresh_results_and_bankroll_snapshot() -> TaskResult:
+    started_at = _task_window()
+    init_db()
+    session = SessionLocal()
+    results_version = build_snapshot_version("results")
+    bankroll_version = build_snapshot_version("bankroll")
+    try:
+        results_payload = build_betting_results_payload(session)
+        bankroll_payload = build_bankroll_summary_payload(session)
+        results_snapshot = create_snapshot(
+            session,
+            BettingResultsSnapshot,
+            payload=results_payload,
+            version=results_version,
+            status="success",
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            activate=True,
+        )
+        bankroll_snapshot = create_snapshot(
+            session,
+            BankrollSummarySnapshot,
+            payload=bankroll_payload,
+            version=bankroll_version,
+            status="success",
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            activate=True,
+        )
+        return {
+            "status": "success",
+            "results_snapshot_version": results_snapshot.version,
+            "bankroll_snapshot_version": bankroll_snapshot.version,
+            "results_count": len(results_payload.get("items", [])),
+            "active_bets_count": len(bankroll_payload.get("active_bets", [])),
+        }
+    except Exception as e:
+        logger.error("task_refresh_results_and_bankroll_snapshot failed: %s", e, exc_info=True)
+        session.rollback()
+        record_snapshot_failure(
+            session,
+            BettingResultsSnapshot,
+            version=results_version,
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            message=str(e),
+        )
+        record_snapshot_failure(
+            session,
+            BankrollSummarySnapshot,
+            version=bankroll_version,
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            message=str(e),
+        )
+        return {"status": "error", "message": str(e)}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="task_refresh_rankings_snapshot")
+def task_refresh_rankings_snapshot() -> TaskResult:
+    started_at = _task_window()
+    version = build_snapshot_version("rankings")
+    init_db()
+    session = SessionLocal()
+    try:
+        payload = build_power_rankings_payload()
+        snapshot = create_snapshot(
+            session,
+            PowerRankingsSnapshot,
+            payload=payload,
+            version=version,
+            status="success",
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            activate=True,
+        )
+        return {
+            "status": "success",
+            "snapshot_version": snapshot.version,
+            "items": len(payload.get("items", [])),
+        }
+    except Exception as e:
+        logger.error("task_refresh_rankings_snapshot failed: %s", e, exc_info=True)
+        session.rollback()
+        record_snapshot_failure(
+            session,
+            PowerRankingsSnapshot,
+            version=version,
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            message=str(e),
+        )
+        return {"status": "error", "message": str(e)}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="task_refresh_homepage_manifest")
+def task_refresh_homepage_manifest() -> TaskResult:
+    started_at = _task_window()
+    version = build_snapshot_version("homepage")
+    init_db()
+    session = SessionLocal()
+    try:
+        payload = build_homepage_manifest_payload(session)
+        snapshot = create_snapshot(
+            session,
+            HomepageSnapshotManifest,
+            payload=payload,
+            version=version,
+            status="success",
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            activate=True,
+        )
+        purge_cloudflare_cache(reason="task_refresh_homepage_manifest")
+        return {
+            "status": "success",
+            "snapshot_version": snapshot.version,
+        }
+    except Exception as e:
+        logger.error("task_refresh_homepage_manifest failed: %s", e, exc_info=True)
+        session.rollback()
+        record_snapshot_failure(
+            session,
+            HomepageSnapshotManifest,
+            version=version,
+            source_window_started_at=started_at,
+            source_window_completed_at=utc_now(),
+            message=str(e),
+        )
+        return {"status": "error", "message": str(e)}
+    finally:
+        session.close()
+
+
+def run_snapshot_refresh_after_settlement() -> dict[str, object]:
+    results_bankroll = task_refresh_results_and_bankroll_snapshot.apply().get()
+    task_refresh_upcoming_snapshot.apply().get()
+    task_refresh_live_snapshot.apply().get()
+    homepage = task_refresh_homepage_manifest.apply().get()
+    return {
+        "results_and_bankroll_snapshot": results_bankroll,
+        "homepage_manifest": homepage,
+    }
+
+
+def _refresh_pipeline_acquire_slot(task_id: str) -> bool:
+    existing = get_current_task_id()
+    if not existing or existing == task_id:
+        set_current_task_id(task_id)
+        return True
+    result = AsyncResult(existing, app=celery_app)
+    state = (result.state or "PENDING").upper()
+    if state in ("PENDING", "STARTED", "PROGRESS"):
+        return False
+    clear_current_task_id()
+    set_current_task_id(task_id)
+    return True
+
+
 @celery_app.task(name="task_refresh_odds_pipeline", bind=True)
 def task_refresh_odds_pipeline(self) -> TaskResult:
+    task_id = self.request.id
+    if not _refresh_pipeline_acquire_slot(task_id):
+        return {
+            "status": "skipped",
+            "message": "Another refresh is already running",
+            "progress": 0,
+            "stage": "skipped",
+        }
     try:
         self.update_state(state="PROGRESS", meta={"progress": 5, "stage": "queued"})
 
@@ -110,7 +415,31 @@ def task_refresh_odds_pipeline(self) -> TaskResult:
 
         self.update_state(
             state="PROGRESS",
-            meta={"progress": 95, "stage": "finalizing"},
+            meta={"progress": 88, "stage": "refreshing_upcoming_snapshot"},
+        )
+        upcoming_snapshot_result = task_refresh_upcoming_snapshot()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={"progress": 92, "stage": "refreshing_results_snapshot"},
+        )
+        results_snapshot_result = task_refresh_results_and_bankroll_snapshot()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={"progress": 96, "stage": "refreshing_live_snapshot"},
+        )
+        live_snapshot_result = task_refresh_live_snapshot()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={"progress": 97, "stage": "refreshing_homepage_manifest"},
+        )
+        manifest_result = task_refresh_homepage_manifest()
+
+        self.update_state(
+            state="PROGRESS",
+            meta={"progress": 99, "stage": "finalizing"},
         )
         return {
             "status": "success",
@@ -118,6 +447,10 @@ def task_refresh_odds_pipeline(self) -> TaskResult:
             "pandascore": pandascore_result,
             "thunderpick": thunderpick_result,
             "auto_bets": auto_bets_result,
+            "upcoming_snapshot": upcoming_snapshot_result,
+            "results_and_bankroll_snapshot": results_snapshot_result,
+            "live_snapshot": live_snapshot_result,
+            "homepage_manifest": manifest_result,
             "progress": 100,
             "stage": "completed",
         }
@@ -129,6 +462,9 @@ def task_refresh_odds_pipeline(self) -> TaskResult:
             "progress": 100,
             "stage": "failed",
         }
+    finally:
+        clear_current_task_id()
+        set_last_completed_at_now()
 
 
 @celery_app.task(name="task_settle_bets")
@@ -140,10 +476,15 @@ def task_settle_bets() -> TaskResult:
         session = SessionLocal()
         try:
             summary = settle_completed_bets(session)
+            refresh_out = run_snapshot_refresh_after_settlement()
+            model_health = task_verify_model_health()
             return {
                 "status": "success",
                 "message": "Settlement completed",
                 "results": [summary],
+                "results_and_bankroll_snapshot": refresh_out["results_and_bankroll_snapshot"],
+                "homepage_manifest": refresh_out["homepage_manifest"],
+                "model_health": model_health,
             }
         finally:
             session.close()
@@ -250,14 +591,24 @@ def task_model_training() -> TaskResult:
 
             results = train_all_models(X, y, metadata, feature_names)
             run_ids = persist_model_runs(session, results)
+            promoted = next(
+                (
+                    {
+                        "run_id": r.get("run_id"),
+                        "model_type": r["model_type"],
+                        "model_version": r["model_version"],
+                    }
+                    for r in results
+                    if getattr(r.get("persisted_run"), "is_active", False)
+                ),
+                None,
+            )
             return {
                 "status": "success",
                 "models_trained": len(results),
                 "run_ids": run_ids,
-                "best_model": next(
-                    (r["model_type"] for r in results if r.get("is_active")),
-                    None,
-                ),
+                "best_model": next((r["model_type"] for r in results if r.get("is_active")), None),
+                "promoted_model": promoted,
             }
         finally:
             session.close()
@@ -363,6 +714,13 @@ def task_full_pipeline(data_dir: str = "/data/matches") -> TaskResult:
 
     train_result = task_model_training()
     results["training"] = train_result
+    results["snapshots"] = {
+        "upcoming": task_refresh_upcoming_snapshot(),
+        "live": task_refresh_live_snapshot(),
+        "results_and_bankroll": task_refresh_results_and_bankroll_snapshot(),
+        "rankings": task_refresh_rankings_snapshot(),
+        "homepage": task_refresh_homepage_manifest(),
+    }
 
     return {
         "status": "success" if train_result.get("status") == "success" else "partial",
@@ -427,13 +785,53 @@ def task_refresh_data() -> TaskResult:
         return {"status": "error", "stage": "features", "results": fe_result}
 
     train_result = task_model_training()
+    model_health = task_verify_model_health()
+    snapshots = {
+        "upcoming": task_refresh_upcoming_snapshot(),
+        "live": task_refresh_live_snapshot(),
+        "results_and_bankroll": task_refresh_results_and_bankroll_snapshot(),
+        "rankings": task_refresh_rankings_snapshot(),
+        "homepage": task_refresh_homepage_manifest(),
+    }
     return {
         "status": "success" if train_result.get("status") == "success" else "partial",
         "downloaded": data_dir,
         "ingest": ingest_result,
         "features": fe_result,
         "training": train_result,
+        "model_health": model_health,
+        "snapshots": snapshots,
     }
+
+
+@celery_app.task(name="task_verify_model_health")
+def task_verify_model_health() -> TaskResult:
+    try:
+        from ml.model_manifest import read_model_manifest
+        from ml.predictor_v2 import get_prediction_runtime_status
+
+        init_db()
+        session = SessionLocal()
+        try:
+            runtime_status = get_prediction_runtime_status(session)
+            manifest = read_model_manifest() or {}
+            active_model_id = runtime_status.get("active_model_id")
+            has_active_model = active_model_id is not None
+            return {
+                "status": "success" if has_active_model else "error",
+                "active_model_id": active_model_id,
+                "active_model_version": runtime_status.get("active_model_version"),
+                "active_model_path": runtime_status.get("active_model_path"),
+                "manifest_run_id": manifest.get("source_run_id"),
+                "manifest_version": manifest.get("model_version"),
+                "game_data_row_count": runtime_status.get("game_data_row_count"),
+                "message": "Active model is available" if has_active_model else "No active model is loadable",
+            }
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error("task_verify_model_health failed: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 
 @celery_app.task(name="task_check_completed_matches")

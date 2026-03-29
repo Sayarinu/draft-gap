@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import UUID as UUIDType, uuid4
 
 from sqlalchemy import (
@@ -12,15 +12,25 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
+
+
+JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
+UUID_TYPE = Uuid(as_uuid=True).with_variant(UUID(as_uuid=True), "postgresql")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class League(Base):
@@ -32,7 +42,7 @@ class League(Base):
     tier: Mapped[str | None] = mapped_column(String(8), nullable=True)
     tier_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
     region: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     aliases: Mapped[list[LeagueAlias]] = relationship("LeagueAlias", back_populates="league", lazy="selectin")
     games: Mapped[list[Game]] = relationship("Game", back_populates="league", lazy="selectin")
@@ -45,7 +55,7 @@ class LeagueAlias(Base):
     league_id: Mapped[int] = mapped_column(ForeignKey("league.id", ondelete="CASCADE"), nullable=False, index=True)
     alias: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     league: Mapped[League] = relationship("League", back_populates="aliases")
 
@@ -63,8 +73,8 @@ class Team(Base):
     pandascore_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
     active_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     active_to: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     aliases: Mapped[list[TeamAlias]] = relationship("TeamAlias", back_populates="team", lazy="selectin")
     ratings: Mapped[list[TeamRating]] = relationship("TeamRating", back_populates="team", lazy="selectin")
@@ -78,7 +88,7 @@ class TeamAlias(Base):
     team_id: Mapped[int] = mapped_column(ForeignKey("team.id", ondelete="CASCADE"), nullable=False, index=True)
     alias: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     team: Mapped[Team] = relationship("Team", back_populates="aliases")
 
@@ -97,8 +107,8 @@ class Player(Base):
     pandascore_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True, index=True)
     active_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     active_to: Mapped[date | None] = mapped_column(Date, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     aliases: Mapped[list[PlayerAlias]] = relationship("PlayerAlias", back_populates="player", lazy="selectin")
     roster_entries: Mapped[list[Roster]] = relationship("Roster", back_populates="player", lazy="selectin")
@@ -111,7 +121,7 @@ class PlayerAlias(Base):
     player_id: Mapped[int] = mapped_column(ForeignKey("player.id", ondelete="CASCADE"), nullable=False, index=True)
     alias: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     player: Mapped[Player] = relationship("Player", back_populates="aliases")
 
@@ -128,7 +138,7 @@ class Roster(Base):
     joined_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     left_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="csv")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     team: Mapped[Team] = relationship("Team", back_populates="roster_entries")
     player: Mapped[Player] = relationship("Player", back_populates="roster_entries")
@@ -145,7 +155,7 @@ class CanonicalChampion(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     canonical_name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     internal_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     aliases: Mapped[list[ChampionAlias]] = relationship("ChampionAlias", back_populates="champion", lazy="selectin")
 
@@ -157,7 +167,7 @@ class ChampionAlias(Base):
     champion_id: Mapped[int] = mapped_column(ForeignKey("canonical_champion.id", ondelete="CASCADE"), nullable=False, index=True)
     alias: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     champion: Mapped[CanonicalChampion] = relationship("CanonicalChampion", back_populates="aliases")
 
@@ -175,7 +185,7 @@ class EntityResolutionLog(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     source_system: Mapped[str] = mapped_column(String(32), nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
         Index("ix_er_log_unresolved", "entity_type", "resolved"),
@@ -199,7 +209,7 @@ class Game(Base):
     blue_win: Mapped[bool] = mapped_column(Boolean, nullable=False)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="oracles_elixir")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     league: Mapped[League] = relationship("League", back_populates="games")
     game_teams: Mapped[list[GameTeam]] = relationship("GameTeam", back_populates="game", lazy="selectin")
@@ -339,9 +349,9 @@ class MatchFeature(Base):
     playoffs: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    features: Mapped[dict | None] = mapped_column(JSON_TYPE, nullable=True)
     feature_version: Mapped[str] = mapped_column(String(16), nullable=False, default="v1")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
         Index("ix_match_feature_played", "played_at"),
@@ -374,7 +384,7 @@ class MLModelRun(Base):
     feature_names_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class PredictionLog(Base):
@@ -397,7 +407,7 @@ class PredictionLog(Base):
 
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="api")
     pandascore_match_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
 
 class TeamRating(Base):
@@ -410,7 +420,7 @@ class TeamRating(Base):
     rating: Mapped[float] = mapped_column(Float, nullable=False)
     rd: Mapped[float | None] = mapped_column(Float, nullable=True)
     games_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     team: Mapped[Team] = relationship("Team", back_populates="ratings")
 
@@ -423,7 +433,7 @@ class TeamRating(Base):
 class Bankroll(Base):
     __tablename__ = "bankroll"
 
-    id: Mapped[UUIDType] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUIDType] = mapped_column(UUID_TYPE, primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
     initial_balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
@@ -432,24 +442,42 @@ class Bankroll(Base):
     kelly_fraction: Mapped[Decimal] = mapped_column(Numeric(4, 3), nullable=False, default=Decimal("0.250"))
     max_bet_pct: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False, default=Decimal("0.0500"))
     min_edge_threshold: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False, default=Decimal("0.0300"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     bets: Mapped[list[Bet]] = relationship("Bet", back_populates="bankroll", lazy="selectin")
+    bet_events: Mapped[list[BetEvent]] = relationship("BetEvent", back_populates="bankroll", lazy="selectin")
     snapshots: Mapped[list[BankrollSnapshot]] = relationship("BankrollSnapshot", back_populates="bankroll", lazy="selectin")
 
 
 class Bet(Base):
     __tablename__ = "bet"
 
-    id: Mapped[UUIDType] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUIDType] = mapped_column(UUID_TYPE, primary_key=True, default=uuid4)
     bankroll_id: Mapped[UUIDType] = mapped_column(ForeignKey("bankroll.id", ondelete="CASCADE"), nullable=False, index=True)
-    pandascore_match_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True, index=True)
+    pandascore_match_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     model_run_id: Mapped[int | None] = mapped_column(ForeignKey("ml_model_run.id", ondelete="SET NULL"), nullable=True, index=True)
     team_a: Mapped[str] = mapped_column(String(255), nullable=False)
     team_b: Mapped[str] = mapped_column(String(255), nullable=False)
     league: Mapped[str | None] = mapped_column(String(255), nullable=True)
     series_format: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    series_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    bet_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    entry_phase: Mapped[str] = mapped_column(String(32), nullable=False, default="prematch")
+    entry_score_team_a: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entry_score_team_b: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_score_team_a: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_score_team_b: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    odds_source_status: Mapped[str] = mapped_column(String(16), nullable=False, default="available")
+    feed_health_status: Mapped[str] = mapped_column(String(32), nullable=False, default="tracked")
+    live_rebet_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    model_snapshot_json: Mapped[dict[str, object] | None] = mapped_column(JSON_TYPE, nullable=True)
+    market_type: Mapped[str] = mapped_column(String(32), nullable=False, default="match_winner")
+    selection_key: Mapped[str] = mapped_column(String(64), nullable=False, default="team_a")
+    line_value: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    source_book: Mapped[str] = mapped_column(String(32), nullable=False, default="thunderpick")
+    source_market_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_selection_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     bet_on: Mapped[str] = mapped_column(String(255), nullable=False)
     model_prob: Mapped[Decimal] = mapped_column(Numeric(6, 5), nullable=False)
     book_odds_locked: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
@@ -458,26 +486,51 @@ class Bet(Base):
     ev: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     recommended_stake: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     actual_stake: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PLACED", index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PLACED", index=True)
     profit_loss: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     closing_odds: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
-    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     bankroll: Mapped[Bankroll] = relationship("Bankroll", back_populates="bets")
+    events: Mapped[list[BetEvent]] = relationship("BetEvent", back_populates="bet", lazy="selectin")
 
     __table_args__ = (
         Index("ix_bet_status_placed", "status", "placed_at"),
         Index("ix_bet_bankroll_status", "bankroll_id", "status"),
+        Index("ix_bet_match_status", "pandascore_match_id", "status"),
+        Index("ix_bet_series_key_status", "series_key", "status", "placed_at"),
+    )
+
+
+class BetEvent(Base):
+    __tablename__ = "bet_event"
+
+    id: Mapped[UUIDType] = mapped_column(UUID_TYPE, primary_key=True, default=uuid4)
+    bankroll_id: Mapped[UUIDType] = mapped_column(ForeignKey("bankroll.id", ondelete="CASCADE"), nullable=False, index=True)
+    bet_id: Mapped[UUIDType | None] = mapped_column(ForeignKey("bet.id", ondelete="SET NULL"), nullable=True, index=True)
+    pandascore_match_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    series_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    amount_delta: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0.00"))
+    payload_json: Mapped[dict[str, object] | None] = mapped_column(JSON_TYPE, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+
+    bankroll: Mapped[Bankroll] = relationship("Bankroll", back_populates="bet_events")
+    bet: Mapped[Bet | None] = relationship("Bet", back_populates="events")
+
+    __table_args__ = (
+        Index("ix_bet_event_series_created", "series_key", "created_at"),
+        Index("ix_bet_event_bankroll_created", "bankroll_id", "created_at"),
     )
 
 
 class BankrollSnapshot(Base):
     __tablename__ = "bankroll_snapshot"
 
-    id: Mapped[UUIDType] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUIDType] = mapped_column(UUID_TYPE, primary_key=True, default=uuid4)
     bankroll_id: Mapped[UUIDType] = mapped_column(ForeignKey("bankroll.id", ondelete="CASCADE"), nullable=False, index=True)
-    snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True, default=datetime.utcnow)
+    snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True, default=utc_now)
     balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     total_bets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     wins: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -486,3 +539,73 @@ class BankrollSnapshot(Base):
     peak_balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
     bankroll: Mapped[Bankroll] = relationship("Bankroll", back_populates="snapshots")
+
+
+class _SnapshotMixin:
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    payload_json: Mapped[dict[str, object]] = mapped_column(JSON_TYPE, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        index=True,
+    )
+    source_window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    source_window_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+
+
+class UpcomingWithOddsSnapshot(_SnapshotMixin, Base):
+    __tablename__ = "upcoming_with_odds_snapshot"
+
+    __table_args__ = (
+        Index("ix_upcoming_with_odds_snapshot_active_generated", "is_active", "generated_at"),
+    )
+
+
+class LiveWithOddsSnapshot(_SnapshotMixin, Base):
+    __tablename__ = "live_with_odds_snapshot"
+
+    __table_args__ = (
+        Index("ix_live_with_odds_snapshot_active_generated", "is_active", "generated_at"),
+    )
+
+
+class BettingResultsSnapshot(_SnapshotMixin, Base):
+    __tablename__ = "betting_results_snapshot"
+
+    __table_args__ = (
+        Index("ix_betting_results_snapshot_active_generated", "is_active", "generated_at"),
+    )
+
+
+class BankrollSummarySnapshot(_SnapshotMixin, Base):
+    __tablename__ = "bankroll_summary_snapshot"
+
+    __table_args__ = (
+        Index("ix_bankroll_summary_snapshot_active_generated", "is_active", "generated_at"),
+    )
+
+
+class PowerRankingsSnapshot(_SnapshotMixin, Base):
+    __tablename__ = "power_rankings_snapshot"
+
+    __table_args__ = (
+        Index("ix_power_rankings_snapshot_active_generated", "is_active", "generated_at"),
+    )
+
+
+class HomepageSnapshotManifest(_SnapshotMixin, Base):
+    __tablename__ = "homepage_snapshot_manifest"
+
+    __table_args__ = (
+        Index("ix_homepage_snapshot_manifest_active_generated", "is_active", "generated_at"),
+    )

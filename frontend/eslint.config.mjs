@@ -19,6 +19,12 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  {
+    files: ["src/app/components/Table/**/*.{ts,tsx}"],
+    rules: {
+      "react-hooks/incompatible-library": "off",
+    },
+  },
   globalIgnores([
     ".next/**",
     "dist/**",

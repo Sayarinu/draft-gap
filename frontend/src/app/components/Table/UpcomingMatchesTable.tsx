@@ -7,9 +7,9 @@ import {
   flexRender,
   createColumnHelper,
 } from "@tanstack/react-table";
-import type { PandaScoreUpcomingMatch } from "@/app/types/pandascore";
+import type { UpcomingMatchWithOdds } from "@/app/types/pandascore";
 
-const columnHelper = createColumnHelper<PandaScoreUpcomingMatch>();
+const columnHelper = createColumnHelper<UpcomingMatchWithOdds>();
 
 function formatDateTime(isoString: string) {
   const date = new Date(isoString);
@@ -27,27 +27,18 @@ function formatDateTime(isoString: string) {
   };
 }
 
-function getTeamNames(match: PandaScoreUpcomingMatch): [string, string] {
-  const a = match.opponents[0]?.opponent?.name ?? "TBD";
-  const b = match.opponents[1]?.opponent?.name ?? "TBD";
+function getTeamNames(match: UpcomingMatchWithOdds): [string, string] {
+  const a = match.team1_name || "TBD";
+  const b = match.team2_name || "TBD";
   return [a, b];
 }
 
-function getTeamAcronyms(match: PandaScoreUpcomingMatch): [string, string] {
-  const a = match.opponents[0]?.opponent?.acronym ?? "";
-  const b = match.opponents[1]?.opponent?.acronym ?? "";
-  return [a, b];
-}
-
-function formatMatchType(match: PandaScoreUpcomingMatch): string {
-  if (match.match_type === "best_of" && match.number_of_games) {
-    return `Bo${match.number_of_games}`;
-  }
-  return match.match_type ?? "—";
+function formatMatchType(match: UpcomingMatchWithOdds): string {
+  return match.series_format ?? "—";
 }
 
 interface UpcomingMatchesTableProps {
-  matches: PandaScoreUpcomingMatch[];
+  matches: UpcomingMatchWithOdds[];
 }
 
 export const UpcomingMatchesTable = ({ matches }: UpcomingMatchesTableProps) => {
@@ -65,21 +56,12 @@ export const UpcomingMatchesTable = ({ matches }: UpcomingMatchesTableProps) => 
           );
         },
       }),
-      columnHelper.accessor((m) => m.league?.name ?? "", {
+      columnHelper.accessor((m) => m.league_name, {
         id: "league",
         header: "LEAGUE",
         cell: ({ row }) => (
           <div className="text-xs uppercase tracking-wide text-taupe">
-            {row.original.league?.name ?? "—"}
-          </div>
-        ),
-      }),
-      columnHelper.accessor((m) => m.tournament?.name ?? "", {
-        id: "tournament",
-        header: "TOURNAMENT",
-        cell: ({ row }) => (
-          <div className="text-xs text-cream">
-            {row.original.tournament?.name ?? "—"}
+            {row.original.league_name || "—"}
           </div>
         ),
       }),
@@ -88,13 +70,9 @@ export const UpcomingMatchesTable = ({ matches }: UpcomingMatchesTableProps) => 
         header: "TEAM 1",
         cell: ({ row }) => {
           const [team1] = getTeamNames(row.original);
-          const [acr1] = getTeamAcronyms(row.original);
           return (
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-cream">{team1}</span>
-              {acr1 && (
-                <span className="text-2xs text-taupe font-mono">({acr1})</span>
-              )}
             </div>
           );
         },
@@ -103,7 +81,7 @@ export const UpcomingMatchesTable = ({ matches }: UpcomingMatchesTableProps) => 
         id: "vs",
         header: "",
         cell: () => (
-          <div className="text-xs font-bold text-coffee px-2">VS</div>
+          <div className="px-2 text-xs font-bold text-stone">VS</div>
         ),
       }),
       columnHelper.display({
@@ -111,13 +89,9 @@ export const UpcomingMatchesTable = ({ matches }: UpcomingMatchesTableProps) => 
         header: "TEAM 2",
         cell: ({ row }) => {
           const [, team2] = getTeamNames(row.original);
-          const [, acr2] = getTeamAcronyms(row.original);
           return (
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-cream">{team2}</span>
-              {acr2 && (
-                <span className="text-2xs text-taupe font-mono">({acr2})</span>
-              )}
             </div>
           );
         },
@@ -131,15 +105,15 @@ export const UpcomingMatchesTable = ({ matches }: UpcomingMatchesTableProps) => 
           </div>
         ),
       }),
-      columnHelper.accessor((m) => m.streams_list?.[0]?.raw_url ?? null, {
+      columnHelper.accessor((m) => m.stream_url, {
         id: "stream",
         header: "STREAM",
         cell: ({ row }) => {
-          const stream = row.original.streams_list?.[0];
-          if (!stream?.raw_url) return <span className="text-taupe text-xs">—</span>;
+          const streamUrl = row.original.stream_url;
+          if (!streamUrl) return <span className="text-taupe text-xs">—</span>;
           return (
             <a
-              href={stream.raw_url}
+              href={streamUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-gold hover:underline"

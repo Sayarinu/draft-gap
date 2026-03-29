@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from api.dependencies import get_db
 from database import SessionLocal, init_db
+from models_ml import PowerRankingsSnapshot
+from services.homepage_snapshots import apply_snapshot_headers, get_active_snapshot
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
@@ -17,7 +21,6 @@ MAJOR_REGION_SLUGS: tuple[str, ...] = (
     "lcs",
     "cblol",
     "lcp",
-    "pcs",
 )
 
 LEAGUE_BASE_WEIGHTS: dict[str, float] = {
@@ -27,7 +30,6 @@ LEAGUE_BASE_WEIGHTS: dict[str, float] = {
     "lcs": 0.85,
     "cblol": 0.75,
     "lcp": 0.70,
-    "pcs": 0.75,
 }
 
 
@@ -57,8 +59,6 @@ class _RankingRowRaw:
 class PowerRankingRow(BaseModel):
     rank: int
     team: str
-    abbreviation: str | None
-    league: str
     league_slug: str
     wins: int
     losses: int
@@ -68,15 +68,7 @@ class PowerRankingRow(BaseModel):
     first_blood_pct: float
     first_dragon_pct: float
     first_tower_pct: float
-    kda: float
     games_played: int
-    playoff_games: int
-    playoff_wins: int
-    playoff_losses: int
-    split_titles: int
-    strength_of_schedule: float
-    region_weight: float
-    composite_score: float
 
 
 def _region_weight(league_slug: str) -> float:
@@ -119,8 +111,7 @@ def _composite_score(row: _RankingRowRaw, win_rate: float) -> tuple[float, float
     return base_score * region_weight, strength_of_schedule, region_weight
 
 
-@router.get("/power", response_model=list[PowerRankingRow])
-def get_power_rankings(league: str | None = None) -> list[PowerRankingRow]:
+def compute_power_rankings(league: str | None = None) -> list[PowerRankingRow]:
     init_db()
     session = SessionLocal()
     try:
@@ -320,8 +311,6 @@ def get_power_rankings(league: str | None = None) -> list[PowerRankingRow]:
             PowerRankingRow(
                 rank=index + 1,
                 team=row.team,
-                abbreviation=row.abbreviation,
-                league=row.league,
                 league_slug=row.league_slug,
                 wins=row.wins,
                 losses=row.losses,
@@ -331,17 +320,30 @@ def get_power_rankings(league: str | None = None) -> list[PowerRankingRow]:
                 first_blood_pct=round(row.first_blood_pct, 4),
                 first_dragon_pct=round(row.first_dragon_pct, 4),
                 first_tower_pct=round(row.first_tower_pct, 4),
-                kda=round(row.kda, 3),
                 games_played=row.games_played,
-                playoff_games=row.playoff_games,
-                playoff_wins=row.playoff_wins,
-                playoff_losses=row.playoff_losses,
-                split_titles=row.split_titles,
-                strength_of_schedule=round(strength_of_schedule, 4),
-                region_weight=round(region_weight, 4),
-                composite_score=round(score, 3),
             )
             for index, (row, win_rate, score, strength_of_schedule, region_weight) in enumerate(ranked)
         ]
     finally:
         session.close()
+
+
+@router.get("/power", response_model=list[PowerRankingRow])
+def get_power_rankings(
+    response: Response,
+    league: str | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> list[PowerRankingRow]:
+    snapshot = get_active_snapshot(session, PowerRankingsSnapshot)
+    apply_snapshot_headers(response, snapshot, key="rankings")
+    items = list((snapshot.payload_json if snapshot else {}).get("items", []))
+    if len(items) == 0:
+        items = [row.model_dump() for row in compute_power_rankings(None)]
+    items = [
+        item
+        for item in items
+        if str(item.get("league_slug") or "").strip().lower() in MAJOR_REGION_SLUGS
+    ]
+    if league:
+        items = [item for item in items if str(item.get("league_slug") or "") == league.strip().lower()]
+    return [PowerRankingRow.model_validate(item) for item in items]

@@ -1,7 +1,12 @@
 import logging
+from pathlib import PurePosixPath
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+
+from api.dependencies import require_admin_api_key
+from api.ingestion_paths import resolved_csv_path_under_data
 from tasks import ingest_lol_data
 
 router = APIRouter()
@@ -15,13 +20,17 @@ class IngestTriggerResponse(BaseModel):
 
 
 @router.post("/ingest", status_code=202, response_model=IngestTriggerResponse)
-async def trigger_ingestion(file_name: str = "input.csv") -> IngestTriggerResponse:
+async def trigger_ingestion(
+    _: Annotated[None, Depends(require_admin_api_key)],
+    file_name: str = "input.csv",
+) -> IngestTriggerResponse:
+    safe_path = resolved_csv_path_under_data(file_name)
     try:
-        task = ingest_lol_data.delay(f"/data/{file_name}")
+        task = ingest_lol_data.delay(safe_path)
         return IngestTriggerResponse(
             message="Ingestion task queued",
             task_id=task.id,
-            file=file_name,
+            file=PurePosixPath(safe_path).name,
         )
     except Exception as e:
         logger.error(

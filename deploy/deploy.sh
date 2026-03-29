@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE="${1:-.env.production}"
+ENV_FILE="${1:-.env}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${DEPLOY_ROOT}"
@@ -10,6 +10,10 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Missing env file: ${ENV_FILE}"
   exit 1
 fi
+
+set -a
+source "${ENV_FILE}"
+set +a
 
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.prod.yml --env-file "${ENV_FILE}")
 if [[ -f docker-compose.ci.yml ]]; then
@@ -25,6 +29,59 @@ PULL_FLAG="${PULL_FLAG:-}"
 
 log() {
   printf '[deploy] %s\n' "$*"
+}
+
+source "${SCRIPT_DIR}/runtime_validation.sh"
+
+prepare_migration_state() {
+  local has_alembic has_bankroll has_bet has_bankroll_snapshot baseline_count
+
+  has_alembic="$(db_psql_scalar "SELECT to_regclass('public.alembic_version') IS NOT NULL")"
+  if [[ "${has_alembic}" == "t" ]]; then
+    return 0
+  fi
+
+  has_bankroll="$(db_psql_scalar "SELECT to_regclass('public.bankroll') IS NOT NULL")"
+  has_bet="$(db_psql_scalar "SELECT to_regclass('public.bet') IS NOT NULL")"
+  has_bankroll_snapshot="$(db_psql_scalar "SELECT to_regclass('public.bankroll_snapshot') IS NOT NULL")"
+
+  baseline_count=0
+  [[ "${has_bankroll}" == "t" ]] && baseline_count=$((baseline_count + 1))
+  [[ "${has_bet}" == "t" ]] && baseline_count=$((baseline_count + 1))
+  [[ "${has_bankroll_snapshot}" == "t" ]] && baseline_count=$((baseline_count + 1))
+
+  if (( baseline_count == 0 )); then
+    log "No existing paper-trading baseline tables detected; applying full migration chain."
+    return 0
+  fi
+
+  if (( baseline_count != 3 )); then
+    log "Detected partially initialized legacy schema without alembic_version; refusing automatic stamp."
+    return 1
+  fi
+
+  log "Legacy paper-trading tables detected without alembic_version; stamping 20260308_01."
+  docker compose "${COMPOSE_FILES[@]}" run --rm api alembic stamp 20260308_01
+}
+
+run_migrations() {
+  log "Running database migrations..."
+  prepare_migration_state
+  docker compose "${COMPOSE_FILES[@]}" run --rm api alembic upgrade head
+}
+
+wait_for_database() {
+  log "Waiting for database readiness..."
+  local attempts=30
+  while (( attempts > 0 )); do
+    if docker compose "${COMPOSE_FILES[@]}" exec -T db pg_isready -U "${POSTGRES_USER:-draftgap}" -d "${POSTGRES_DB:-draftgap_db}" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=$((attempts - 1))
+    sleep 2
+  done
+  log "Database did not become ready in time."
+  return 1
 }
 
 docker_root_dir() {
@@ -85,7 +142,15 @@ main() {
       docker image prune -af || true
     fi
     docker compose "${COMPOSE_FILES[@]}" pull "${BUILD_SERVICES[@]}"
-    docker compose "${COMPOSE_FILES[@]}" up -d "${ALL_SERVICES[@]}"
+    docker compose "${COMPOSE_FILES[@]}" up -d db redis
+    wait_for_database
+    run_migrations
+    docker compose "${COMPOSE_FILES[@]}" up -d api worker beat frontend caddy
+    bootstrap_runtime_snapshots
+    run_smoke_checks
+    verify_snapshot_integrity
+    run_runtime_diagnostics_check
+    docker compose "${COMPOSE_FILES[@]}" up -d --force-recreate --no-deps caddy
     log "Deployment finished."
     return 0
   fi
@@ -112,7 +177,15 @@ main() {
   fi
 
   log "Starting/updating services..."
-  docker compose "${COMPOSE_FILES[@]}" up -d "${ALL_SERVICES[@]}"
+  docker compose "${COMPOSE_FILES[@]}" up -d db redis
+  wait_for_database
+  run_migrations
+  docker compose "${COMPOSE_FILES[@]}" up -d api worker beat frontend caddy
+  bootstrap_runtime_snapshots
+  run_smoke_checks
+  verify_snapshot_integrity
+  run_runtime_diagnostics_check
+  docker compose "${COMPOSE_FILES[@]}" up -d --force-recreate --no-deps caddy
 
   log "Deployment finished."
 }

@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -17,10 +16,30 @@ import {
   YAxis,
 } from "recharts";
 
-import type { Result } from "@/app/types/Result";
+import type { ResultsAnalytics } from "@/app/types/Result";
+import { useIsMobile } from "@/app/lib/useMediaQuery";
 
 interface ResultsMetricsProps {
-  results: Result[];
+  analytics: ResultsAnalytics;
+}
+
+interface ChartTooltipProps {
+  active?: boolean;
+  label?: string;
+  payload?: Array<{
+    color?: string;
+    dataKey?: string;
+    name?: string;
+    value?: number | string;
+    payload?: {
+      league?: string;
+      name?: string;
+      profit?: number;
+      value?: number;
+    };
+  }>;
+  variant: "cumulative" | "distribution" | "league";
+  settledBets: number;
 }
 
 const formatCurrency = (value: number): string => {
@@ -34,103 +53,83 @@ const formatPercent = (value: number): string =>
 const CHART_COLORS = {
   won: "var(--color-safe)",
   lost: "var(--color-error)",
-  void: "var(--color-stone)",
-  pnl: "var(--color-gold)",
+  profit: "var(--color-gold)",
 };
 
-export const ResultsMetrics = ({ results }: ResultsMetricsProps) => {
-  const summary = useMemo(() => {
-    let wins = 0;
-    let losses = 0;
-    let voids = 0;
-    let totalStaked = 0;
-    let totalPnl = 0;
+const ResultsChartTooltip = ({
+  active,
+  label,
+  payload,
+  variant,
+  settledBets,
+}: ChartTooltipProps) => {
+  if (!active || !payload?.length) return null;
 
-    results.forEach((row) => {
-      totalStaked += row.stake;
-      totalPnl += row.profitLoss;
-      if (row.result === "WON") wins += 1;
-      else if (row.result === "LOST") losses += 1;
-      else voids += 1;
-    });
+  const primary = payload[0];
+  const numericValue =
+    typeof primary?.value === "number"
+      ? primary.value
+      : Number(primary?.value ?? 0);
 
-    const settled = wins + losses + voids;
-    const winRate = settled > 0 ? (wins / settled) * 100 : 0;
-    const roi = totalStaked > 0 ? (totalPnl / totalStaked) * 100 : 0;
+  let eyebrow = "";
+  let title = label ?? primary?.name ?? primary?.payload?.name ?? primary?.payload?.league ?? "";
+  let detail = "";
 
-    return {
-      wins,
-      losses,
-      voids,
-      settled,
-      totalStaked,
-      totalPnl,
-      winRate,
-      roi,
-    };
-  }, [results]);
-
-  const cumulativePnlData = useMemo(() => {
-    const sorted = [...results].sort(
-      (a, b) =>
-        new Date(a.betDateTime).getTime() - new Date(b.betDateTime).getTime(),
-    );
-    return sorted.reduce<Array<{ label: string; pnl: number }>>((acc, row) => {
-      const previousPnl = acc.length === 0 ? 0 : acc[acc.length - 1].pnl;
-      const nextPnl = Number((previousPnl + row.profitLoss).toFixed(2));
-      const date = new Date(row.betDateTime);
-      return [
-        ...acc,
-        {
-        label: date.toLocaleDateString(undefined, {
-          month: "numeric",
-          day: "numeric",
-        }),
-          pnl: nextPnl,
-        },
-      ];
-    }, []);
-  }, [results]);
-
-  const outcomeData = useMemo(
-    () => [
-      { name: "Won", value: summary.wins, color: CHART_COLORS.won },
-      { name: "Lost", value: summary.losses, color: CHART_COLORS.lost },
-      { name: "Void", value: summary.voids, color: CHART_COLORS.void },
-    ],
-    [summary.losses, summary.voids, summary.wins],
-  );
-
-  const leaguePnlData = useMemo(() => {
-    const byLeague = new Map<string, number>();
-    results.forEach((row) => {
-      byLeague.set(row.league, (byLeague.get(row.league) ?? 0) + row.profitLoss);
-    });
-    return Array.from(byLeague.entries())
-      .map(([league, pnl]) => ({ league, pnl: Number(pnl.toFixed(2)) }))
-      .sort((a, b) => b.pnl - a.pnl)
-      .slice(0, 10);
-  }, [results]);
-
-  if (results.length === 0) return null;
+  if (variant === "cumulative") {
+    eyebrow = "Running Profit";
+    detail = `${formatCurrency(numericValue)} after settled bets through ${title}`;
+  } else if (variant === "distribution") {
+    const count = primary?.payload?.value ?? numericValue;
+    const share = settledBets > 0 ? (count / settledBets) * 100 : 0;
+    eyebrow = "Outcome Split";
+    title = primary?.payload?.name ?? title;
+    detail = `${count} bets, ${share.toFixed(1)}% of settled volume`;
+  } else {
+    const direction = numericValue >= 0 ? "Net gain" : "Net loss";
+    eyebrow = "Event Performance";
+    title = primary?.payload?.league ?? title;
+    detail = `${direction} of ${formatCurrency(numericValue)} across settled results`;
+  }
 
   return (
-    <section className="border-b border-coffee bg-deepdark px-4 py-4 space-y-4">
+    <div className="min-w-44 rounded border border-coffee bg-deepdark/95 px-3 py-2 shadow-[0_0_0_1px_rgba(4,4,4,0.4)]">
+      <div className="text-3xs tracking-[0.22em] text-stone">{eyebrow}</div>
+      <div className="mt-1 text-xs text-cream">{title}</div>
+      <div className="mt-2 font-mono text-sm text-cream">{detail}</div>
+    </div>
+  );
+};
+
+export const ResultsMetrics = ({ analytics }: ResultsMetricsProps) => {
+  const isMobile = useIsMobile();
+  const summary = analytics.summary;
+  const outcomeData = analytics.outcome_data.map((entry) => ({
+    ...entry,
+    color: entry.name === "Won" ? CHART_COLORS.won : CHART_COLORS.lost,
+  }));
+  const cumulativeProfitData = analytics.cumulative_profit_data;
+  const leagueProfitData = analytics.league_profit_data;
+  const hasLeagueProfitData = leagueProfitData.length > 0;
+
+  if (summary.settled === 0) return null;
+
+  return (
+    <section className="flex min-h-full flex-col border-b border-coffee bg-deepdark px-4 py-4">
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <div className="rounded border border-coffee bg-concrete/50 px-3 py-2">
           <div className="text-2xs text-taupe">Win Rate</div>
           <div className="font-mono text-sm text-cream">
-            {summary.winRate.toFixed(1)}%
+            {summary.win_rate.toFixed(1)}%
           </div>
         </div>
         <div className="rounded border border-coffee bg-concrete/50 px-3 py-2">
-          <div className="text-2xs text-taupe">Total P&L</div>
+          <div className="text-2xs text-taupe">Total Profit</div>
           <div
             className={`font-mono text-sm ${
-              summary.totalPnl >= 0 ? "text-safe" : "text-error"
+              summary.total_profit >= 0 ? "text-safe" : "text-error"
             }`}
           >
-            {formatCurrency(summary.totalPnl)}
+            {formatCurrency(summary.total_profit)}
           </div>
         </div>
         <div className="rounded border border-coffee bg-concrete/50 px-3 py-2">
@@ -149,28 +148,30 @@ export const ResultsMetrics = ({ results }: ResultsMetricsProps) => {
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded border border-coffee bg-concrete/50 p-3">
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="min-w-0 rounded border border-coffee bg-concrete/50 p-3">
           <h3 className="mb-2 text-2xs tracking-wide text-taupe">
-            Cumulative P&L
+            Cumulative Profit
           </h3>
-          <div className="h-52">
+          <div className={isMobile ? "h-48" : "h-60"}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={cumulativePnlData}>
+              <LineChart data={cumulativeProfitData}>
                 <CartesianGrid stroke="var(--color-coffee)" strokeDasharray="3 3" />
-                <XAxis dataKey="label" stroke="var(--color-stone)" />
-                <YAxis stroke="var(--color-stone)" />
+                <XAxis dataKey="label" stroke="var(--color-stone)" hide={isMobile} />
+                <YAxis stroke="var(--color-stone)" hide={isMobile} />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: "var(--color-deepdark)",
-                    border: "1px solid var(--color-coffee)",
-                    color: "var(--color-cream)",
-                  }}
+                  cursor={{ stroke: "var(--color-coffee)", strokeDasharray: "4 4" }}
+                  content={
+                    <ResultsChartTooltip
+                      variant="cumulative"
+                      settledBets={summary.settled}
+                    />
+                  }
                 />
                 <Line
                   type="monotone"
-                  dataKey="pnl"
-                  stroke={CHART_COLORS.pnl}
+                  dataKey="profit"
+                  stroke={CHART_COLORS.profit}
                   strokeWidth={2}
                   dot={false}
                 />
@@ -179,11 +180,11 @@ export const ResultsMetrics = ({ results }: ResultsMetricsProps) => {
           </div>
         </div>
 
-        <div className="rounded border border-coffee bg-concrete/50 p-3">
+        <div className="min-w-0 rounded border border-coffee bg-concrete/50 p-3">
           <h3 className="mb-2 text-2xs tracking-wide text-taupe">
             Result Distribution
           </h3>
-          <div className="h-52">
+          <div className={isMobile ? "h-44" : "h-52"}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -199,48 +200,66 @@ export const ResultsMetrics = ({ results }: ResultsMetricsProps) => {
                   ))}
                 </Pie>
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: "var(--color-deepdark)",
-                    border: "1px solid var(--color-coffee)",
-                    color: "var(--color-cream)",
-                  }}
+                  content={
+                    <ResultsChartTooltip
+                      variant="distribution"
+                      settledBets={summary.settled}
+                    />
+                  }
                 />
-                <Legend />
+                {!isMobile && <Legend />}
               </PieChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      <div className="rounded border border-coffee bg-concrete/50 p-3">
-        <h3 className="mb-2 text-2xs tracking-wide text-taupe">
-          P&L by League
-        </h3>
-        <div className="h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={leaguePnlData}>
-              <CartesianGrid stroke="var(--color-coffee)" strokeDasharray="3 3" />
-              <XAxis dataKey="league" stroke="var(--color-stone)" />
-              <YAxis stroke="var(--color-stone)" />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "var(--color-deepdark)",
-                  border: "1px solid var(--color-coffee)",
-                  color: "var(--color-cream)",
-                }}
-              />
-              <Bar dataKey="pnl">
-                {leaguePnlData.map((entry) => (
-                  <Cell
-                    key={entry.league}
-                    fill={entry.pnl >= 0 ? CHART_COLORS.won : CHART_COLORS.lost}
+      {!isMobile && (
+        <div className="mt-4 min-w-0 flex-1 rounded border border-coffee bg-concrete/50 p-3">
+          <h3 className="mb-2 text-2xs tracking-wide text-taupe">
+            Profit by Event
+          </h3>
+          <div className="h-80 min-h-[20rem] xl:h-[26rem]">
+            {hasLeagueProfitData ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={leagueProfitData}>
+                  <CartesianGrid stroke="var(--color-coffee)" strokeDasharray="3 3" />
+                  <XAxis dataKey="league" stroke="var(--color-stone)" />
+                  <YAxis stroke="var(--color-stone)" />
+                  <Tooltip
+                    cursor={false}
+                    content={
+                      <ResultsChartTooltip
+                        variant="league"
+                        settledBets={summary.settled}
+                      />
+                    }
                   />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+                  <Bar
+                    dataKey="profit"
+                    activeBar={{
+                      fillOpacity: 1,
+                      stroke: "var(--color-cream)",
+                      strokeWidth: 1,
+                    }}
+                  >
+                    {leagueProfitData.map((entry) => (
+                      <Cell
+                        key={entry.league}
+                        fill={entry.profit >= 0 ? CHART_COLORS.won : CHART_COLORS.lost}
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center border border-dashed border-coffee/60 bg-deepdark/35 text-xs uppercase tracking-[0.2em] text-taupe">
+                No settled event profit yet
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 };

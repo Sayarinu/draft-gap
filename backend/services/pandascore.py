@@ -18,6 +18,60 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.pandascore.co"
 DEFAULT_TIMEOUT = 30.0
 
+
+class PandaScoreUpstreamError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        message: str,
+        path: str,
+        status_code: int | None = None,
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.status_code = status_code
+        self.retryable = retryable
+
+
+def _is_degradable_status(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
+
+
+def is_degradable_upstream_error(exc: BaseException) -> bool:
+    return isinstance(exc, PandaScoreUpstreamError) and exc.retryable
+
+
+def _wrap_httpx_error(path: str, exc: Exception) -> Exception:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if _is_degradable_status(status_code):
+            return PandaScoreUpstreamError(
+                message=(
+                    f"PandaScore upstream returned {status_code} for {path}"
+                ),
+                path=path,
+                status_code=status_code,
+                retryable=True,
+            )
+        return exc
+
+    if isinstance(exc, httpx.TimeoutException):
+        return PandaScoreUpstreamError(
+            message=f"PandaScore upstream timed out for {path}",
+            path=path,
+            retryable=True,
+        )
+
+    if isinstance(exc, httpx.RequestError):
+        return PandaScoreUpstreamError(
+            message=f"PandaScore upstream request failed for {path}: {exc}",
+            path=path,
+            retryable=True,
+        )
+
+    return exc
+
 def _normalize_slug(value: str | None) -> str:
     return (value or "").strip().lower()
 
@@ -54,10 +108,37 @@ def match_has_approved_league(match: dict[str, object]) -> bool:
 
 
 def match_allowed_tier(match: dict[str, object]) -> bool:
-    tier = (match.get("tournament") or {}).get("tier")
-    if tier not in ("s", "a"):
-        return False
-    return match_has_approved_league(match)
+    return classify_match_betting_eligibility(match)["is_bettable"]
+
+
+def classify_match_betting_eligibility(match: dict[str, object]) -> dict[str, object]:
+    league = match.get("league") or {}
+    tournament = match.get("tournament") or {}
+    league_name = str(league.get("name") or "").strip()
+    league_slug = str(league.get("slug") or "").strip()
+    tournament_name = str(tournament.get("name") or "").strip()
+    tournament_tier = str(tournament.get("tier") or "").strip().lower()
+    normalized_identity = league_slug or league_name or tournament_name or None
+    if tournament_tier not in ("s", "a"):
+        return {
+            "is_bettable": False,
+            "eligibility_reason": "tier_not_bettable",
+            "normalized_identity": normalized_identity,
+            "tournament_tier": tournament_tier or None,
+        }
+    if not match_has_approved_league(match):
+        return {
+            "is_bettable": False,
+            "eligibility_reason": "league_not_bettable",
+            "normalized_identity": normalized_identity,
+            "tournament_tier": tournament_tier or None,
+        }
+    return {
+        "is_bettable": True,
+        "eligibility_reason": None,
+        "normalized_identity": normalized_identity,
+        "tournament_tier": tournament_tier or None,
+    }
 
 
 def league_name_allowed(league_name: str | None) -> bool:
@@ -110,9 +191,66 @@ def fetch_json_sync(
     t = token or get_token()
     url = _build_url(path)
     with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
-        resp = client.get(url, headers=_auth_headers(t), params=params or {})
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = client.get(url, headers=_auth_headers(t), params=params or {})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            raise _wrap_httpx_error(path, exc) from exc
+
+
+SETTLEMENT_MATCH_ID_CHUNK_SIZE = 40
+
+
+def fetch_lol_matches_by_ids_sync(
+    match_ids: list[int],
+    *,
+    chunk_size: int = SETTLEMENT_MATCH_ID_CHUNK_SIZE,
+    token: str | None = None,
+) -> dict[int, dict[str, object]]:
+    out: dict[int, dict[str, object]] = {}
+    ordered = sorted({int(mid) for mid in match_ids if int(mid) > 0})
+    if not ordered:
+        return out
+    t = token or get_token()
+
+    def merge_single(mid: int) -> None:
+        try:
+            data = fetch_json_sync(f"/lol/matches/{mid}", token=t)
+        except Exception:
+            return
+        if isinstance(data, dict):
+            key = int(data.get("id") or 0)
+            if key > 0:
+                out[key] = data
+
+    for i in range(0, len(ordered), chunk_size):
+        chunk = ordered[i : i + chunk_size]
+        id_param = ",".join(str(x) for x in chunk)
+        per_page = min(100, max(len(chunk), chunk_size))
+        try:
+            batch = fetch_json_sync(
+                "/lol/matches",
+                params={"filter[id]": id_param, "per_page": per_page},
+                token=t,
+            )
+        except Exception:
+            for mid in chunk:
+                if mid not in out:
+                    merge_single(mid)
+            continue
+        rows = batch if isinstance(batch, list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mid = int(row.get("id") or 0)
+            if mid > 0:
+                out[mid] = row
+        for mid in chunk:
+            if mid not in out:
+                merge_single(mid)
+
+    return out
 
 
 async def fetch_json(
@@ -123,9 +261,12 @@ async def fetch_json(
     t = token or get_token()
     url = _build_url(path)
     async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-        resp = await client.get(url, headers=_auth_headers(t), params=params or {})
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = await client.get(url, headers=_auth_headers(t), params=params or {})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            raise _wrap_httpx_error(path, exc) from exc
 
 
 def _rate_limit_remaining(resp: httpx.Response) -> int | None:
@@ -141,10 +282,13 @@ async def fetch_json_with_meta(
     t = token or get_token()
     url = _build_url(path)
     async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-        resp = await client.get(url, headers=_auth_headers(t), params=params or {})
-        resp.raise_for_status()
-        remaining = _rate_limit_remaining(resp)
-        return resp.json(), remaining
+        try:
+            resp = await client.get(url, headers=_auth_headers(t), params=params or {})
+            resp.raise_for_status()
+            remaining = _rate_limit_remaining(resp)
+            return resp.json(), remaining
+        except Exception as exc:
+            raise _wrap_httpx_error(path, exc) from exc
 
 
 TIER_VALUES = ("s", "a", "b", "c", "d")

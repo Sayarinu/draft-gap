@@ -37,7 +37,7 @@ Draft Gap is a full-stack system for **predicting professional League of Legends
 
 **Prerequisites:** Docker and Docker Compose. Optional: `PANDA_SCORE_KEY` for live/upcoming matches and roster sync.
 
-1. **Configure** — Copy `.env.example` to `.env` and set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`. Set `VITE_API_URL` (and optionally `VITE_API_SECRET`) for frontend-to-API calls. Add `PANDA_SCORE_KEY` for PandaScore.
+1. **Configure** — Copy `.env.example` to root `.env` and set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, and `DATABASE_URL`. Set `FRONTEND_URL`, `NEXT_PUBLIC_API_URL`, `VITE_API_URL`, and `FRONTEND_API_SECRET` for frontend-to-API calls. Add `PANDA_SCORE_KEY` for PandaScore-backed operations.
 
 2. **Run** — From the repo root:
 
@@ -74,4 +74,53 @@ Draft Gap is a full-stack system for **predicting professional League of Legends
 - **backend/** — FastAPI app, Celery tasks, entity resolution, ML (feature_engineer, model_registry, predictor_v2), scripts (ingest, train, backfill).
 - **frontend/** — Vite React SPA, app shell (`index.html`, `src/main.tsx`, `src/App.tsx`), components (tables, filters), `lib/api` for backend calls.
 - **data/matches/** — OraclesElixir yearly CSVs (mounted into containers).
+- **backend/models/** — Runtime model artifacts directory. Keep the folder, but generated model binaries are not committed; populate it by training or copying deploy-time artifacts.
 - **.cursor/rules/** — Project style and type-annotation rules (avoid `Any`; use TypedDict/Protocol/object where possible).
+
+## Testing
+
+Tests in Draft Gap are behavior-focused: they validate user-visible UI output and API-visible contract behavior from controlled inputs, rather than asserting implementation details line by line.
+
+### Frontend
+
+Frontend tests use `Vitest`, `Testing Library`, and `MSW`.
+
+```bash
+cd frontend
+npm test
+npm run test:run
+npm run test:coverage
+```
+
+### Backend
+
+Backend tests use `pytest` against a dedicated Postgres test database. External services such as PandaScore, Thunderpick, Celery, and Cloudflare are mocked at the boundary so the suite stays deterministic.
+
+Create a test database first, for example:
+
+```bash
+createdb draftgap_test
+```
+
+Then run:
+
+```bash
+cd backend
+TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/draftgap_test pytest
+TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/draftgap_test pytest --cov
+```
+
+If you are using the local Docker Postgres service from `docker compose`, make sure it is running before backend tests:
+
+```bash
+docker compose up -d db
+```
+
+### Recommended local verification
+
+Before pushing substantial changes:
+
+```bash
+cd frontend && npm run test:run && npm run build
+cd backend && TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/draftgap_test pytest
+```

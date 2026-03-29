@@ -21,7 +21,7 @@ export const EventFilterPanel = ({
 
   return (
     <div
-      className="absolute left-0 top-full z-50 mt-1 w-72 rounded-lg border border-coffee bg-deepdark p-4 shadow-lg"
+      className="absolute left-0 right-0 top-full z-50 mt-1 w-[calc(100vw-1.5rem)] max-w-sm rounded-lg border border-coffee bg-deepdark p-4 shadow-lg sm:right-auto sm:w-72"
       role="dialog"
       aria-label="Filter by event"
     >
@@ -65,7 +65,7 @@ export const EventFilterPanel = ({
           <button
             type="button"
             onClick={onClose}
-            className="rounded bg-gold px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-deepdark hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-gold focus:ring-offset-2 focus:ring-offset-deepdark"
+            className="rounded border border-gold bg-gold/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gold hover:bg-gold/20 focus:outline-none focus:ring-2 focus:ring-gold focus:ring-offset-2 focus:ring-offset-deepdark"
           >
             Done
           </button>

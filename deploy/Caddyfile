@@ -2,7 +2,13 @@
   encode gzip zstd
 
   handle /api/* {
-    reverse_proxy api:8000
+    reverse_proxy api:8000 {
+      header_up X-Admin-Key {$FRONTEND_API_SECRET}
+      transport http {
+        read_timeout 120s
+        write_timeout 30s
+      }
+    }
   }
 
   handle /health {
@@ -10,6 +16,6 @@
   }
 
   handle {
-    reverse_proxy frontend:3000
+    reverse_proxy frontend:80
   }
 }
